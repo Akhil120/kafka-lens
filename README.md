@@ -8,7 +8,27 @@ A fast, locally-hosted Kafka message browser built as a drop-in replacement for 
 
 ## Quick start
 
-### Option A — Full Docker stack (recommended)
+### Option A — pipx install (no Docker, connects to any Kafka)
+
+Requires Python 3.11+ and [pipx](https://pipx.pypa.io).
+
+```bash
+pipx install git+https://github.com/Akhil120/kafka-lens.git
+kafka-lens
+# → http://localhost:8000
+```
+
+Upgrades:
+
+```bash
+pipx upgrade kafka-lens
+```
+
+Cluster configs survive upgrades — stored encrypted in `~/.kafka-lens/`.
+
+> If you don't have pipx: `pip install pipx && pipx ensurepath`, then re-run the install command above.
+
+### Option B — Full Docker stack (Kafka + app together)
 
 Everything in one command:
 
@@ -30,7 +50,7 @@ Add your first cluster in the UI with these settings:
 
 Cluster configs are persisted in a Docker volume (`kafka_lens_data`) and survive restarts.
 
-### Option B — App on host, Kafka in Docker
+### Option C — App on host, Kafka in Docker
 
 ```bash
 # Start Kafka + Schema Registry only
@@ -179,13 +199,15 @@ Kafka (KRaft, Docker) + Confluent Schema Registry (Docker)
 
 ```
 kafka-lens/
+├── pyproject.toml              pip/pipx package definition + entry point
 ├── docker-compose.yml          Kafka (KRaft) + Schema Registry
 ├── requirements.txt
-├── run.py                      uvicorn entry point
+├── run.py                      uvicorn entry point (dev)
 ├── start.sh                    One-command bootstrap (creates .venv)
 ├── config/
 │   └── kafka-jaas.conf         SASL credentials for the Docker broker
 ├── app/
+│   ├── __main__.py             Entry point for `kafka-lens` CLI and `python -m app`
 │   ├── main.py                 FastAPI app, static/template mounts
 │   ├── config.py               Pydantic settings
 │   ├── models.py               All Pydantic request/response models
@@ -199,15 +221,15 @@ kafka-lens/
 │   │   └── deserializer.py     Auto-detect + deserialize Avro/JSON/Protobuf/plain
 │   ├── search/
 │   │   └── engine.py           DuckDB table, SQL filter builder, SSE emit
-│   └── api/
-│       ├── clusters.py         /api/clusters CRUD + /test endpoint
-│       ├── topics.py           /api/topics list + metadata
-│       └── search.py           POST search → task_id; GET SSE stream; DELETE cancel
-├── templates/
-│   └── index.html              Full UI (sidebar + search form + results table)
-├── static/
-│   ├── css/app.css             Custom vars, scrollbar, animations, format badges
-│   └── js/app.js               Alpine.js app: SSE handler, pagination, cluster CRUD
+│   ├── api/
+│   │   ├── clusters.py         /api/clusters CRUD + /test endpoint
+│   │   ├── topics.py           /api/topics list + metadata
+│   │   └── search.py           POST search → task_id; GET SSE stream; DELETE cancel
+│   ├── templates/
+│   │   └── index.html          Full UI (sidebar + search form + results table)
+│   └── static/
+│       ├── css/app.css         Custom vars, scrollbar, animations, format badges
+│       └── js/app.js           Alpine.js app: SSE handler, pagination, cluster CRUD
 └── tests/
     └── test_ui.py              35 end-to-end tests (Playwright + httpx)
 ```
