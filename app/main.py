@@ -10,12 +10,12 @@ from app.api import search as search_router
 from app import store
 from app.models import ClusterSummary
 
-BASE_DIR = Path(__file__).parent.parent
+_HERE = Path(__file__).parent  # app/ directory
 
 app = FastAPI(title="KafkaLens", version="1.0.0", docs_url="/api/docs")
 
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
-templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
+templates = Jinja2Templates(directory=str(_HERE / "templates"))
 
 app.include_router(clusters_router.router)
 app.include_router(topics_router.router)
