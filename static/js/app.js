@@ -29,6 +29,9 @@ function kafkaApp(initialClusters) {
     messages: [],
     searchError: null,
     sseSource: null,
+    searchStartTime: null,
+    searchElapsed: null,
+    _elapsedTimer: null,
     page: 1,
     pageSize: 50,
 
@@ -119,6 +122,14 @@ function kafkaApp(initialClusters) {
       this.searchError = null;
       this.expandedRow = null;
       this.page = 1;
+      this.searchStartTime = Date.now();
+      this.searchElapsed = null;
+      if (this._elapsedTimer) clearInterval(this._elapsedTimer);
+      this._elapsedTimer = setInterval(() => {
+        const ms = Date.now() - this.searchStartTime;
+        const s = (ms / 1000).toFixed(1);
+        this.searchElapsed = s + 's';
+      }, 100);
 
       const body = this._buildSearchBody();
       let taskId;
@@ -162,6 +173,9 @@ function kafkaApp(initialClusters) {
         this.messages = d.messages || [];
         this.page = 1;
         this.searching = false;
+        clearInterval(this._elapsedTimer);
+        const ms = Date.now() - this.searchStartTime;
+        this.searchElapsed = (ms / 1000).toFixed(1) + 's';
         es.close();
       });
 
@@ -171,12 +185,14 @@ function kafkaApp(initialClusters) {
           this.searchError = d.error;
         } catch {}
         this.searching = false;
+        clearInterval(this._elapsedTimer);
         es.close();
       });
 
       es.onerror = () => {
         if (this.searching) {
           this.searching = false;
+          clearInterval(this._elapsedTimer);
         }
         es.close();
       };

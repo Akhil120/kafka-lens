@@ -1,18 +1,22 @@
 from __future__ import annotations
 import asyncio
 import json
+import re
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Any
 
 import duckdb
 
 from app.models import ClusterConfig, SearchRequest, KafkaMessage
-from app.kafka.consumer import fetch_messages
+from app.kafka.consumer import fetch_partition, resolve_partition_ranges
 from app.schema.deserializer import make_deserializer
 
 _tasks: dict[str, dict] = {}
+
+MAX_PARTITION_THREADS = 3
 
 
 def create_task(cluster: ClusterConfig, topic: str, request: SearchRequest) -> str:
@@ -43,13 +47,74 @@ def cancel_task(task_id: str) -> bool:
     return False
 
 
-def _run_search(task_id: str) -> None:
-    task = _tasks[task_id]
-    cluster: ClusterConfig = task["cluster"]
-    topic: str = task["topic"]
-    request: SearchRequest = task["request"]
-    cancel_event: threading.Event = task["cancel"]
+def _jsonpath_get(val: Any, path: str) -> Any:
+    """Navigate a simple $.a.b[0].c JSONPath into a dict/list."""
+    parts = re.split(r'[.\[\]]+', path.lstrip('$').lstrip('.'))
+    current = val
+    for part in parts:
+        if not part:
+            continue
+        if isinstance(current, dict):
+            current = current.get(part)
+        elif isinstance(current, list) and part.isdigit():
+            current = current[int(part)]
+        else:
+            return None
+    return current
 
+
+def _matches_filters(
+    key: str | None,
+    value_raw: str,
+    val: Any,
+    request: SearchRequest,
+) -> bool:
+    """Return True if the message passes all key/value filters (non-SQL modes)."""
+    if request.key_filter:
+        kf = request.key_filter
+        km = request.key_match
+        if key is None:
+            return False
+        if km == "exact" and key != kf:
+            return False
+        elif km == "prefix" and not key.startswith(kf):
+            return False
+        elif km == "regex" and not re.search(kf, key):
+            return False
+        elif km == "contains" and kf.lower() not in key.lower():
+            return False
+
+    if request.value_filter:
+        vf = request.value_filter
+        vm = request.value_filter_mode
+        if vm == "jsonpath":
+            path, _, expected = vf.partition("=")
+            path = path.strip()
+            expected = expected.strip().strip("\"'")
+            actual = _jsonpath_get(val, path)
+            if expected:
+                if str(actual) != expected:
+                    return False
+            elif actual is None:
+                return False
+        else:  # fulltext
+            if vf.lower() not in value_raw.lower():
+                return False
+
+    return True
+
+
+def _search_partition(
+    cluster: ClusterConfig,
+    topic: str,
+    pid: int,
+    start_offset: int,
+    end_offset: int,
+    max_messages: int,
+    request: SearchRequest,
+    cancel_event: threading.Event,
+    task: dict,
+) -> list[KafkaMessage]:
     deserializer = make_deserializer(
         cluster.schema_registry_url,
         cluster.schema_registry_username,
@@ -57,12 +122,70 @@ def _run_search(task_id: str) -> None:
         request.schema_registry_url,
     )
 
-    all_matched: list[KafkaMessage] = []
-    total_scanned = 0
-    con = None
+    use_sql = request.value_filter_mode == "sql" and request.value_filter
 
+    if use_sql:
+        return _search_partition_sql(
+            cluster, topic, pid, start_offset, end_offset, max_messages,
+            request, cancel_event, task, deserializer,
+        )
+
+    # Fast path: Python-based filtering — no DuckDB round-trip per batch
+    matched: list[KafkaMessage] = []
+    for batch in fetch_partition(
+        cluster, topic, pid, start_offset, end_offset, max_messages,
+        lambda: cancel_event.is_set(), batch_size=50000,
+    ):
+        if cancel_event.is_set():
+            break
+
+        for raw in batch:
+            val, fmt = deserializer.deserialize(
+                raw["value_bytes"], raw["key_bytes"], request.format
+            )
+            key = raw["key_bytes"].decode("utf-8", errors="replace") if raw["key_bytes"] else None
+
+            if isinstance(val, (dict, list)):
+                value_raw = json.dumps(val, default=str)
+            else:
+                value_raw = str(val) if val is not None else ""
+
+            if not _matches_filters(key, value_raw, val, request):
+                continue
+
+            matched.append(KafkaMessage(
+                partition=raw["partition"],
+                offset=raw["offset"],
+                timestamp=raw["timestamp"],
+                timestamp_human=_ts_to_human(raw["timestamp"]),
+                key=key,
+                value=val if isinstance(val, (dict, list)) else value_raw,
+                value_raw=value_raw,
+                headers=raw["headers"],
+                format=fmt,
+            ))
+
+        with task["lock"]:
+            task["scanned"] += len(batch)
+
+    return matched
+
+
+def _search_partition_sql(
+    cluster: ClusterConfig,
+    topic: str,
+    pid: int,
+    start_offset: int,
+    end_offset: int,
+    max_messages: int,
+    request: SearchRequest,
+    cancel_event: threading.Event,
+    task: dict,
+    deserializer,
+) -> list[KafkaMessage]:
+    """SQL mode: accumulate all messages in DuckDB then apply WHERE clause."""
+    con = duckdb.connect(":memory:")
     try:
-        con = duckdb.connect(":memory:")
         con.execute("""
             CREATE TABLE messages (
                 partition INTEGER,
@@ -76,9 +199,13 @@ def _run_search(task_id: str) -> None:
             )
         """)
 
-        where_clauses, _ = _build_where(request)
+        where_clauses, params = _build_where(request)
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        for batch in fetch_messages(cluster, topic, request, lambda: cancel_event.is_set(), batch_size=5000):
+
+        for batch in fetch_partition(
+            cluster, topic, pid, start_offset, end_offset, max_messages,
+            lambda: cancel_event.is_set(), batch_size=50000,
+        ):
             if cancel_event.is_set():
                 break
 
@@ -97,56 +224,78 @@ def _run_search(task_id: str) -> None:
                     value_json = None
 
                 rows.append((
-                    raw["partition"],
-                    raw["offset"],
-                    raw["timestamp"],
-                    key,
-                    value_json,
-                    value_raw,
-                    json.dumps(raw["headers"]),
-                    fmt,
+                    raw["partition"], raw["offset"], raw["timestamp"],
+                    key, value_json, value_raw, json.dumps(raw["headers"]), fmt,
                 ))
 
             if rows:
-                con.executemany(
-                    "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows
-                )
-                total_scanned += len(rows)
-
-                _, params = _build_where(request)
-                matched_rows = con.execute(
-                    f"SELECT * FROM messages {where_sql} ORDER BY timestamp, partition, msg_offset",
-                    params,
-                ).fetchall()
-
-                new_messages = [_row_to_message(row) for row in matched_rows]
-                all_matched.extend(new_messages)
-
+                con.executemany("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
                 with task["lock"]:
-                    task["results"] = list(all_matched)
-                    task["matched"] = len(all_matched)
-                    task["scanned"] = total_scanned
+                    task["scanned"] += len(rows)
 
-                con.execute("DELETE FROM messages")
+        matched_rows = con.execute(
+            f"SELECT * FROM messages {where_sql} ORDER BY timestamp, partition, msg_offset",
+            params,
+        ).fetchall()
+        return [_row_to_message(row) for row in matched_rows]
+    finally:
+        con.close()
+
+
+def _run_search(task_id: str) -> None:
+    task = _tasks[task_id]
+    cluster: ClusterConfig = task["cluster"]
+    topic: str = task["topic"]
+    request: SearchRequest = task["request"]
+    cancel_event: threading.Event = task["cancel"]
+
+    all_matched: list[KafkaMessage] = []
+
+    try:
+        partition_ranges = resolve_partition_ranges(cluster, topic, request)
+        if not partition_ranges:
+            return
+
+        n_partitions = len(partition_ranges)
+
+        with ThreadPoolExecutor(max_workers=min(n_partitions, MAX_PARTITION_THREADS)) as pool:
+            futures = {
+                pool.submit(
+                    _search_partition,
+                    cluster, topic, pid, start, end, request.max_messages,
+                    request, cancel_event, task,
+                ): pid
+                for pid, (start, end) in partition_ranges.items()
+            }
+
+            for future in as_completed(futures):
+                if cancel_event.is_set():
+                    break
+                try:
+                    partition_results = future.result()
+                    all_matched.extend(partition_results)
+                    all_matched.sort(key=lambda m: (m.timestamp, m.partition, m.offset))
+                    with task["lock"]:
+                        task["results"] = list(all_matched)
+                        task["matched"] = len(all_matched)
+                except Exception as e:
+                    with task["lock"]:
+                        task["error"] = str(e)
 
     except Exception as e:
         with task["lock"]:
             task["error"] = str(e)
     finally:
-        if con:
-            con.close()
         with task["lock"]:
-            task["scanned"] = total_scanned
             task["done"] = True
 
 
 def _row_to_message(row: tuple) -> KafkaMessage:
     partition, msg_offset, ts, key, value_json, value_raw, headers_str, fmt = row
-    offset = msg_offset
     parsed_val = json.loads(value_json) if value_json else value_raw
     return KafkaMessage(
         partition=partition,
-        offset=offset,
+        offset=msg_offset,
         timestamp=ts,
         timestamp_human=_ts_to_human(ts),
         key=key,
@@ -180,20 +329,8 @@ def _build_where(request: SearchRequest) -> tuple[list[str], list]:
     if request.value_filter:
         vf = request.value_filter
         vm = request.value_filter_mode
-        if vm == "jsonpath":
-            path, _, expected = vf.partition("=")
-            path = path.strip()
-            expected = expected.strip().strip("\"'")
-            if expected:
-                clauses.append(f"json_extract_string(value_json, '{path}') = ?")
-                params.append(expected)
-            else:
-                clauses.append(f"json_extract_string(value_json, '{path}') IS NOT NULL")
-        elif vm == "sql":
+        if vm == "sql":
             clauses.append(f"({vf})")
-        else:
-            clauses.append("value_raw ILIKE ?")
-            params.append(f"%{vf}%")
 
     return clauses, params
 
@@ -244,4 +381,5 @@ async def stream_results(task_id: str) -> AsyncGenerator[str, None]:
             yield f"event: done\ndata: {json.dumps({'scanned': scanned, 'matched': matched, 'messages': final}, default=str)}\n\n"
             break
 
-        await asyncio.sleep(0.3)
+        changed = scanned != last_scanned or matched != last_matched
+        await asyncio.sleep(0.05 if not changed else 0.0)
