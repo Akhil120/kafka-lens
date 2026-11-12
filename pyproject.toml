@@ -28,7 +28,3 @@ kafka-lens = "app.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"app/static" = "app/static"
-"app/templates" = "app/templates"
