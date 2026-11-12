@@ -15,10 +15,19 @@ def build_kafka_config(cluster: ClusterConfig, extra: dict | None = None) -> dic
     cfg["security.protocol"] = proto
 
     if proto in ("SSL", "SASL_SSL"):
+        from app.kafka.ssl import get_system_ca_bundle
         ssl = cluster.ssl
+
+        # CA cert: explicit override wins; otherwise inject system bundle
+        # so org proxy CAs (pushed via GPO/MDM) are trusted by librdkafka.
+        if ssl and ssl.ca_location:
+            cfg["ssl.ca.location"] = ssl.ca_location
+        else:
+            bundle = get_system_ca_bundle()
+            if bundle:
+                cfg["ssl.ca.location"] = bundle
+
         if ssl:
-            if ssl.ca_location:
-                cfg["ssl.ca.location"] = ssl.ca_location
             if ssl.certificate_location:
                 cfg["ssl.certificate.location"] = ssl.certificate_location
             if ssl.key_location:
