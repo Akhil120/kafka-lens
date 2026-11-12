@@ -8,21 +8,47 @@ A fast, locally-hosted Kafka message browser built as a drop-in replacement for 
 
 ## Quick start
 
+### Option A — Full Docker stack (recommended)
+
+Everything in one command:
+
 ```bash
-# 1. Start Kafka + Schema Registry
 docker compose up -d
-
-# 2. Start the app (creates .venv automatically on first run)
-./start.sh
 # → http://localhost:8000
-
-# 3. Add your cluster in the UI and start searching
 ```
 
-**Default local cluster credentials** (set in `config/kafka-jaas.conf`):
-- Bootstrap: `localhost:9092` · Protocol: `SASL_PLAINTEXT` · Mechanism: `PLAIN`
-- Username: `kafkalens` / Password: `kafkalens-secret`
-- Schema Registry: `http://localhost:8081`
+Add your first cluster in the UI with these settings:
+
+| Field | Value |
+|---|---|
+| Bootstrap Servers | `kafka:29092` |
+| Security Protocol | `PLAINTEXT` |
+| Schema Registry URL | `http://schema-registry:8081` |
+
+> The app container reaches Kafka via the internal PLAINTEXT listener (`kafka:29092`).
+> The EXTERNAL SASL listener (`localhost:9092`) is for host-side clients only.
+
+Cluster configs are persisted in a Docker volume (`kafka_lens_data`) and survive restarts.
+
+### Option B — App on host, Kafka in Docker
+
+```bash
+# Start Kafka + Schema Registry only
+docker compose up -d kafka schema-registry
+
+# Start the app (creates .venv on first run)
+./start.sh
+# → http://localhost:8000
+```
+
+Add your cluster with:
+
+| Field | Value |
+|---|---|
+| Bootstrap Servers | `localhost:9092` |
+| Security Protocol | `SASL_PLAINTEXT` · Mechanism: `PLAIN` |
+| Username / Password | `kafkalens` / `kafkalens-secret` |
+| Schema Registry URL | `http://localhost:8081` |
 
 ---
 

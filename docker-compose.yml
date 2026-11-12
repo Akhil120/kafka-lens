@@ -12,8 +12,8 @@ services:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      # INTERNAL: plaintext for container-to-container (Schema Registry)
-      # EXTERNAL: SASL_PLAINTEXT for host clients (KafkaLens app)
+      # INTERNAL: plaintext for container-to-container (Schema Registry, kafka-lens container)
+      # EXTERNAL: SASL_PLAINTEXT for host clients (dev without Docker)
       KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
       KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:SASL_PLAINTEXT,CONTROLLER:PLAINTEXT
@@ -51,6 +51,24 @@ services:
       SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
     restart: unless-stopped
 
+  kafka-lens:
+    build: .
+    container_name: kafka-lens-app
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    volumes:
+      - kafka_lens_data:/data
+    environment:
+      DATA_DIR: /data
+    restart: unless-stopped
+
 volumes:
   kafka_data:
+    driver: local
+  kafka_lens_data:
     driver: local
