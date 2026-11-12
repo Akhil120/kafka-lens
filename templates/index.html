@@ -1,0 +1,664 @@
+{% extends "base.html" %}
+
+{% block body %}
+<script>
+  window.__initialClusters = {{ clusters | tojson }};
+</script>
+<div class="flex flex-col h-full"
+     x-data="kafkaApp(window.__initialClusters)"
+     @keydown.escape="showAddModal = false">
+
+  <!-- ═══ TOP BAR ═══ -->
+  <header class="flex items-center gap-4 px-5 py-3 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-sm z-20 flex-shrink-0">
+    <div class="flex items-center gap-2">
+      <svg class="w-7 h-7 text-brand-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+        <path d="M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12"/>
+      </svg>
+      <span class="logo-text text-xl font-bold tracking-tight">KafkaLens</span>
+    </div>
+
+    <div class="flex-1"></div>
+
+    <!-- Theme toggle -->
+    <button @click="toggle()" class="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" title="Toggle theme">
+      <svg x-show="!dark" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
+      <svg x-show="dark" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+    </button>
+
+    <!-- Add cluster -->
+    <button @click="openAddModal()"
+      class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium transition-colors">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+      Add Cluster
+    </button>
+  </header>
+
+  <!-- ═══ BODY ═══ -->
+  <div class="flex flex-1 overflow-hidden">
+
+    <!-- ─── SIDEBAR ─── -->
+    <aside class="sidebar flex flex-col border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-hidden">
+      <div class="p-3 border-b border-gray-100 dark:border-gray-800">
+        <input type="text" x-model="topicFilter" placeholder="Filter topics…"
+          class="w-full px-3 py-1.5 text-sm rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200 placeholder-gray-400">
+      </div>
+
+      <div class="flex-1 overflow-y-auto py-2">
+        <template x-if="clusters.length === 0">
+          <div class="px-4 py-8 text-center text-sm text-gray-400">
+            <svg class="w-10 h-10 mx-auto mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/></svg>
+            No clusters yet.<br>Click <strong>Add Cluster</strong> to begin.
+          </div>
+        </template>
+
+        <template x-for="cluster in clusters" :key="cluster.id">
+          <div class="mb-1">
+            <!-- Cluster row -->
+            <div class="flex items-center gap-2 px-3 py-2 mx-2 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 group transition-colors"
+                 @click="toggleCluster(cluster)">
+              <svg class="w-3.5 h-3.5 text-gray-400 transition-transform flex-shrink-0"
+                   :class="activeClusters[cluster.id]?.expanded ? 'rotate-90' : ''"
+                   fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
+              <svg class="w-4 h-4 text-brand-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2"/></svg>
+              <span class="text-sm font-medium flex-1 truncate" x-text="cluster.name"></span>
+              <span class="proto-badge opacity-0 group-hover:opacity-100 transition-opacity"
+                    :class="protoBadgeClass(cluster.security_protocol)"
+                    x-text="{'PLAINTEXT':'PLAIN','SSL':'SSL','SASL_PLAINTEXT':'SASL','SASL_SSL':'SASL+SSL'}[cluster.security_protocol] || cluster.security_protocol"></span>
+              <!-- Edit -->
+              <button @click.stop="openEditModal(cluster)"
+                class="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:text-brand-600 transition" title="Edit">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+              </button>
+              <button @click.stop="deleteCluster(cluster)"
+                class="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:text-red-500 transition" title="Delete">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+              </button>
+            </div>
+
+            <!-- Topics list -->
+            <div x-show="activeClusters[cluster.id]?.expanded" x-cloak>
+              <template x-if="activeClusters[cluster.id]?.loading">
+                <div class="px-10 py-2 text-xs text-gray-400 flex items-center gap-2">
+                  <svg class="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                  Loading topics…
+                </div>
+              </template>
+
+              <template x-for="topic in filteredTopics(cluster.id)" :key="topic.name">
+                <div class="topic-row flex items-center gap-2 pl-9 pr-3 py-1.5 mx-2 rounded-lg text-sm"
+                     :class="selectedTopic?.name === topic.name && selectedCluster?.id === cluster.id
+                       ? 'bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 font-medium'
+                       : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'"
+                     @click="selectTopic(cluster, topic)">
+                  <svg class="w-3.5 h-3.5 opacity-50 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                  <span class="truncate" x-text="topic.name"></span>
+                  <span class="ml-auto text-xs opacity-50 flex-shrink-0" x-text="topic.partitions + 'p'"></span>
+                </div>
+              </template>
+
+              <template x-if="!activeClusters[cluster.id]?.loading && filteredTopics(cluster.id).length === 0 && activeClusters[cluster.id]?.topics.length === 0">
+                <div class="px-10 py-2 text-xs text-gray-400">No topics found</div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </aside>
+
+    <!-- ─── MAIN CONTENT ─── -->
+    <main class="flex-1 flex flex-col overflow-hidden bg-gray-50 dark:bg-gray-950">
+
+      <!-- Empty state -->
+      <template x-if="!selectedTopic">
+        <div class="flex-1 flex items-center justify-center">
+          <div class="text-center max-w-sm fade-in">
+            <div class="w-20 h-20 mx-auto mb-5 rounded-2xl bg-brand-100 dark:bg-brand-900/20 flex items-center justify-center">
+              <svg class="w-10 h-10 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            </div>
+            <h2 class="text-xl font-semibold text-gray-700 dark:text-gray-300 mb-2">Search Kafka Messages</h2>
+            <p class="text-sm text-gray-500 dark:text-gray-500">Select a cluster and topic from the sidebar to start searching messages.</p>
+          </div>
+        </div>
+      </template>
+
+      <!-- Topic selected -->
+      <template x-if="selectedTopic">
+        <div class="flex-1 flex flex-col overflow-hidden">
+
+          <!-- Topic header -->
+          <div class="flex items-center gap-3 px-6 py-4 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 flex-shrink-0">
+            <div>
+              <div class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-500 mb-0.5">
+                <span x-text="selectedCluster?.name"></span>
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                <span>Topics</span>
+              </div>
+              <h1 class="text-lg font-semibold font-mono" x-text="selectedTopic?.name"></h1>
+            </div>
+
+            <template x-if="topicInfo">
+              <div class="ml-auto flex items-center gap-6 text-sm">
+                <div class="text-center">
+                  <div class="text-xs text-gray-500 dark:text-gray-500 mb-0.5">Partitions</div>
+                  <div class="font-semibold" x-text="topicInfo.partitions"></div>
+                </div>
+                <div class="text-center">
+                  <div class="text-xs text-gray-500 dark:text-gray-500 mb-0.5">Replication</div>
+                  <div class="font-semibold" x-text="topicInfo.replication_factor"></div>
+                </div>
+                <div class="text-center">
+                  <div class="text-xs text-gray-500 dark:text-gray-500 mb-0.5">Total Messages</div>
+                  <div class="font-semibold" x-text="topicInfo.total_messages.toLocaleString()"></div>
+                </div>
+                <template x-if="topicInfo.schema_subject">
+                  <div class="text-center">
+                    <div class="text-xs text-gray-500 dark:text-gray-500 mb-0.5">Schema</div>
+                    <div class="font-mono text-xs text-brand-600 dark:text-brand-400" x-text="topicInfo.schema_subject"></div>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <template x-if="topicLoading">
+              <div class="ml-auto text-sm text-gray-400 flex items-center gap-2">
+                <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                Loading metadata…
+              </div>
+            </template>
+          </div>
+
+          <!-- Scrollable content -->
+          <div class="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+
+            <!-- ── Search Form ── -->
+            <div class="search-card rounded-xl shadow-sm p-5">
+              <h2 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-4 flex items-center gap-2">
+                <svg class="w-4 h-4 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                Search Parameters
+              </h2>
+
+              <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+
+                <!-- Timestamp range -->
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">From Timestamp</label>
+                  <input type="datetime-local" x-model="search.from_timestamp"
+                    class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">To Timestamp</label>
+                  <input type="datetime-local" x-model="search.to_timestamp"
+                    class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                </div>
+
+                <!-- Offset range -->
+                <div class="flex gap-2">
+                  <div class="flex-1">
+                    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">From Offset</label>
+                    <input type="number" x-model="search.from_offset" placeholder="earliest"
+                      class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                  </div>
+                  <div class="flex-1">
+                    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">To Offset</label>
+                    <input type="number" x-model="search.to_offset" placeholder="latest"
+                      class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                  </div>
+                </div>
+
+                <!-- Key filter -->
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Key Filter</label>
+                  <div class="flex gap-2">
+                    <input type="text" x-model="search.key_filter" placeholder="Filter by key…"
+                      class="flex-1 px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                    <select x-model="search.key_match"
+                      class="px-2 py-2 text-xs rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                      <option value="contains">contains</option>
+                      <option value="exact">exact</option>
+                      <option value="prefix">prefix</option>
+                      <option value="regex">regex</option>
+                    </select>
+                  </div>
+                </div>
+
+                <!-- Value filter -->
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Value Filter</label>
+                  <div class="flex gap-2">
+                    <input type="text" x-model="search.value_filter"
+                      :placeholder="search.value_filter_mode === 'jsonpath' ? '$.field = value' : search.value_filter_mode === 'sql' ? 'value_raw LIKE ...' : 'Search in value…'"
+                      class="flex-1 px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                    <select x-model="search.value_filter_mode"
+                      class="px-2 py-2 text-xs rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                      <option value="fulltext">fulltext</option>
+                      <option value="jsonpath">jsonpath</option>
+                      <option value="sql">sql</option>
+                    </select>
+                  </div>
+                </div>
+
+                <!-- Format + limit -->
+                <div class="flex gap-2 items-end">
+                  <div class="flex-1">
+                    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Format</label>
+                    <select x-model="search.format"
+                      class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                      <option value="auto">Auto-detect</option>
+                      <option value="json">JSON</option>
+                      <option value="avro">Avro</option>
+                      <option value="protobuf">Protobuf</option>
+                      <option value="plain">Plain text</option>
+                    </select>
+                  </div>
+                  <div class="w-28">
+                    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Limit</label>
+                    <input type="number" x-model="search.max_messages" min="1"
+                      class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                  </div>
+                </div>
+              </div>
+
+              <!-- Search / Cancel buttons -->
+              <div class="mt-4 flex items-center gap-3">
+                <button @click="startSearch()" :disabled="searching"
+                  class="flex items-center gap-2 px-5 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white text-sm font-medium transition-colors">
+                  <svg x-show="!searching" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                  <svg x-show="searching" class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                  <span x-text="searching ? 'Searching…' : 'Search'"></span>
+                </button>
+
+                <button x-show="searching" @click="cancelSearch()"
+                  class="px-4 py-2 rounded-lg border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 text-sm font-medium transition-colors">
+                  Cancel
+                </button>
+              </div>
+            </div>
+
+            <!-- ── Progress Bar ── -->
+            <template x-if="searching || scanned > 0">
+              <div class="search-card rounded-xl shadow-sm p-4 fade-in">
+                <div class="flex items-center justify-between mb-2">
+                  <div class="flex items-center gap-2 text-sm">
+                    <template x-if="searching">
+                      <svg class="animate-spin w-4 h-4 text-brand-500" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                    </template>
+                    <span class="text-gray-600 dark:text-gray-400">
+                      Scanned <strong x-text="scanned.toLocaleString()"></strong>
+                      <template x-if="topicInfo">
+                        <span> of ~<strong x-text="topicInfo.total_messages.toLocaleString()"></strong></span>
+                      </template>
+                    </span>
+                  </div>
+                  <span class="text-sm font-semibold text-brand-600 dark:text-brand-400">
+                    <span x-text="matched.toLocaleString()"></span> matches
+                  </span>
+                </div>
+                <div class="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                  <div class="h-2 bg-gradient-to-r from-brand-500 to-blue-500 rounded-full transition-all duration-300"
+                       :class="searching ? 'progress-pulse' : ''"
+                       :style="`width: ${progressPercent()}%`"></div>
+                </div>
+              </div>
+            </template>
+
+            <!-- ── Error ── -->
+            <template x-if="searchError">
+              <div class="rounded-xl p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-400 fade-in">
+                <div class="flex items-start gap-2">
+                  <svg class="w-4 h-4 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                  <span x-text="searchError"></span>
+                </div>
+              </div>
+            </template>
+
+            <!-- ── Results Table ── -->
+            <template x-if="messages.length > 0">
+              <div class="search-card rounded-xl shadow-sm overflow-hidden fade-in">
+                <div class="flex items-center justify-between px-5 py-3 border-b border-gray-100 dark:border-gray-800">
+                  <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Showing
+                    <span x-text="((page-1)*pageSize+1).toLocaleString()"></span>–<span x-text="Math.min(page*pageSize, messages.length).toLocaleString()"></span>
+                    of <span x-text="messages.length.toLocaleString()"></span>
+                  </span>
+                  <div class="flex items-center gap-2">
+                    <button @click="exportJson()"
+                      class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+                      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                      JSON
+                    </button>
+                    <button @click="exportCsv()"
+                      class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+                      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                      CSV
+                    </button>
+                  </div>
+                </div>
+
+                <div class="overflow-x-auto">
+                  <table class="results-table w-full text-sm">
+                    <colgroup>
+                      <col style="width:2.5rem">
+                      <col style="width:6rem">
+                      <col style="width:11rem">
+                      <col style="width:9rem">
+                      <col>
+                      <col style="width:5rem">
+                      <col style="width:2.5rem">
+                    </colgroup>
+                    <thead>
+                      <tr class="text-xs text-gray-500 dark:text-gray-400 font-medium uppercase tracking-wide">
+                        <th class="px-4 py-3 text-left">P</th>
+                        <th class="px-4 py-3 text-left">Offset</th>
+                        <th class="px-4 py-3 text-left">Timestamp</th>
+                        <th class="px-4 py-3 text-left">Key</th>
+                        <th class="px-4 py-3 text-left">Value</th>
+                        <th class="px-4 py-3 text-left">Format</th>
+                        <th class="px-4 py-3"></th>
+                      </tr>
+                    </thead>
+                    <template x-for="(msg, idx) in pagedMessages()" :key="idx">
+                      <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
+                          <tr class="hover:bg-gray-50 dark:hover:bg-gray-900/50 cursor-pointer transition-colors"
+                              @click="toggleRow(idx)">
+                            <td class="px-4 py-3 font-mono text-xs text-gray-500">
+                              <span class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded" x-text="msg.partition"></span>
+                            </td>
+                            <td class="px-4 py-3 font-mono text-xs text-gray-600 dark:text-gray-400" x-text="msg.offset.toLocaleString()"></td>
+                            <td class="px-4 py-3 text-xs text-gray-600 dark:text-gray-400" x-text="msg.timestamp_human"></td>
+                            <td class="px-4 py-3 font-mono text-xs group">
+                              <div class="flex items-center gap-1">
+                                <span class="truncate max-w-[128px]" x-text="msg.key || '—'"></span>
+                                <button x-show="msg.key" @click.stop="copyToClipboard(msg.key)"
+                                  class="copy-btn flex-shrink-0 p-0.5 rounded hover:text-brand-600" title="Copy key">
+                                  <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                                </button>
+                              </div>
+                            </td>
+                            <td class="px-4 py-3 font-mono text-xs text-gray-600 dark:text-gray-400">
+                              <span class="truncate max-w-xs block" x-text="valuePreview(msg)"></span>
+                            </td>
+                            <td class="px-4 py-3">
+                              <span class="proto-badge" :class="fmtClass(msg.format)" x-text="msg.format"></span>
+                            </td>
+                            <td class="px-4 py-3 text-gray-400">
+                              <svg class="w-4 h-4 transition-transform" :class="expandedRow === idx ? 'rotate-180' : ''"
+                                   fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                            </td>
+                          </tr>
+
+                          <!-- Expanded detail row -->
+                          <template x-if="expandedRow === idx">
+                            <tr class="bg-gray-50 dark:bg-gray-900/70">
+                              <td colspan="7" class="px-5 py-4">
+                                <div class="message-detail grid grid-cols-1 lg:grid-cols-3 gap-4">
+                                  <!-- Metadata -->
+                                  <div>
+                                    <div class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">Metadata</div>
+                                    <dl class="space-y-1.5 text-xs font-mono">
+                                      <div class="flex gap-2"><dt class="text-gray-400 w-20">Partition</dt><dd x-text="msg.partition"></dd></div>
+                                      <div class="flex gap-2"><dt class="text-gray-400 w-20">Offset</dt><dd x-text="msg.offset"></dd></div>
+                                      <div class="flex gap-2"><dt class="text-gray-400 w-20">Timestamp</dt><dd x-text="msg.timestamp_human"></dd></div>
+                                      <div class="flex gap-2"><dt class="text-gray-400 w-20">Format</dt><dd><span class="proto-badge" :class="fmtClass(msg.format)" x-text="msg.format"></span></dd></div>
+                                    </dl>
+
+                                    <template x-if="msg.key">
+                                      <div class="mt-3">
+                                        <div class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Key</div>
+                                        <div class="flex items-center gap-1 group">
+                                          <span class="font-mono text-xs break-all" x-text="msg.key"></span>
+                                          <button @click="copyToClipboard(msg.key)" class="copy-btn p-0.5 rounded hover:text-brand-600 flex-shrink-0">
+                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                                          </button>
+                                        </div>
+                                      </div>
+                                    </template>
+
+                                    <template x-if="Object.keys(msg.headers || {}).length > 0">
+                                      <div class="mt-3">
+                                        <div class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Headers</div>
+                                        <dl class="space-y-1 text-xs font-mono">
+                                          <template x-for="[k, v] in Object.entries(msg.headers || {})" :key="k">
+                                            <div class="flex gap-2">
+                                              <dt class="text-gray-400 truncate max-w-[80px]" x-text="k"></dt>
+                                              <dd class="truncate" x-text="v"></dd>
+                                            </div>
+                                          </template>
+                                        </dl>
+                                      </div>
+                                    </template>
+                                  </div>
+
+                                  <!-- Value viewer -->
+                                  <div class="lg:col-span-2">
+                                    <div class="flex items-center justify-between mb-2">
+                                      <div class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Value</div>
+                                      <button @click="copyToClipboard(formattedValue(msg))"
+                                        class="flex items-center gap-1 text-xs text-gray-500 hover:text-brand-600 transition-colors">
+                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                                        Copy
+                                      </button>
+                                    </div>
+                                    <div class="json-viewer rounded-lg overflow-hidden">
+                                      <pre><code class="language-json" x-text="formattedValue(msg)"></code></pre>
+                                    </div>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          </template>
+                      </tbody>
+                    </template>
+                  </table>
+                </div>
+
+                <!-- ── Pagination bar ── -->
+                <div class="flex items-center justify-between px-5 py-3 border-t border-gray-100 dark:border-gray-800">
+                  <div class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                    <span>Rows per page:</span>
+                    <select x-model.number="pageSize" @change="page = 1; expandedRow = null"
+                      class="border border-gray-200 dark:border-gray-700 rounded-md px-2 py-1 bg-white dark:bg-gray-900 text-xs focus:outline-none focus:ring-1 focus:ring-purple-500">
+                      <option value="25">25</option>
+                      <option value="50">50</option>
+                      <option value="100">100</option>
+                      <option value="200">200</option>
+                    </select>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <span class="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1">
+                      Page
+                      <input type="number" :value="page" @change="gotoPage($event.target.value)"
+                        class="w-12 text-center border border-gray-200 dark:border-gray-700 rounded-md px-1 py-0.5 bg-white dark:bg-gray-900 text-xs focus:outline-none focus:ring-1 focus:ring-purple-500"
+                        :min="1" :max="totalPages()">
+                      of <span x-text="totalPages()"></span>
+                    </span>
+                    <div class="flex items-center gap-1">
+                      <button @click="prevPage()" :disabled="page <= 1"
+                        class="px-3 py-1.5 rounded-lg text-xs border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                        ← Prev
+                      </button>
+                      <button @click="nextPage()" :disabled="page >= totalPages()"
+                        class="px-3 py-1.5 rounded-lg text-xs border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                        Next →
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </template>
+
+          </div><!-- end scroll -->
+        </div>
+      </template>
+    </main>
+  </div><!-- end body -->
+
+  <!-- ═══ ADD/EDIT CLUSTER MODAL ═══ -->
+  <template x-if="showAddModal">
+    <div class="fixed inset-0 z-50 flex items-center justify-center modal-backdrop" @click.self="showAddModal = false">
+      <div class="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto fade-in">
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800">
+          <h2 class="text-base font-semibold" x-text="editingCluster ? 'Edit Cluster' : 'Add Cluster'"></h2>
+          <button @click="showAddModal = false" class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        <form class="px-6 py-5 space-y-5" @submit.prevent="saveCluster()" autocomplete="on">
+          <!-- Basic -->
+          <div>
+            <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">Connection</h3>
+            <div class="grid grid-cols-2 gap-4">
+              <div class="col-span-2">
+                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Display Name <span class="text-red-500">*</span></label>
+                <input type="text" x-model="clusterForm.name" placeholder="production"
+                  class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+              </div>
+              <div class="col-span-2">
+                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Bootstrap Servers <span class="text-red-500">*</span></label>
+                <input type="text" x-model="clusterForm.bootstrap_servers" placeholder="broker1:9092,broker2:9092"
+                  class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+              </div>
+            </div>
+          </div>
+
+          <!-- Security -->
+          <div>
+            <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">Security</h3>
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Security Protocol</label>
+                <select x-model="clusterForm.security_protocol"
+                  @change="if (clusterForm.security_protocol.startsWith('SASL') && !clusterForm.sasl_mechanism) clusterForm.sasl_mechanism = 'PLAIN'"
+                  class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                  <option value="PLAINTEXT">PLAINTEXT</option>
+                  <option value="SSL">SSL</option>
+                  <option value="SASL_PLAINTEXT">SASL_PLAINTEXT</option>
+                  <option value="SASL_SSL">SASL_SSL</option>
+                </select>
+              </div>
+              <div x-show="clusterForm.security_protocol.startsWith('SASL')">
+                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">SASL Mechanism</label>
+                <select x-model="clusterForm.sasl_mechanism"
+                  class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                  <option value="PLAIN">PLAIN</option>
+                  <option value="SCRAM-SHA-256">SCRAM-SHA-256</option>
+                  <option value="SCRAM-SHA-512">SCRAM-SHA-512</option>
+                  <option value="OAUTHBEARER">OAUTHBEARER</option>
+                  <option value="AWS_MSK_IAM">AWS MSK IAM</option>
+                </select>
+              </div>
+
+              <!-- SASL credentials -->
+              <template x-if="clusterForm.security_protocol.startsWith('SASL') && ['PLAIN','SCRAM-SHA-256','SCRAM-SHA-512'].includes(clusterForm.sasl_mechanism)">
+                <div class="col-span-2 grid grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Username</label>
+                    <input type="text" x-model="clusterForm.username" autocomplete="username"
+                      class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Password</label>
+                    <input type="password" x-model="clusterForm.password" autocomplete="current-password"
+                      class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                  </div>
+                </div>
+              </template>
+
+              <!-- SSL certs -->
+              <template x-if="clusterForm.security_protocol === 'SSL' || clusterForm.security_protocol === 'SASL_SSL'">
+                <div class="col-span-2 space-y-3">
+                  <div>
+                    <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">CA Certificate Path</label>
+                    <input type="text" x-model="clusterForm.ssl_ca_location" placeholder="/path/to/ca.pem"
+                      class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                  </div>
+                  <div class="grid grid-cols-2 gap-4">
+                    <div>
+                      <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Client Cert Path</label>
+                      <input type="text" x-model="clusterForm.ssl_cert_location" placeholder="/path/to/client.pem"
+                        class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                    </div>
+                    <div>
+                      <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Client Key Path</label>
+                      <input type="text" x-model="clusterForm.ssl_key_location" placeholder="/path/to/client.key"
+                        class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Schema Registry -->
+          <div>
+            <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">Schema Registry <span class="font-normal text-gray-400">(optional)</span></h3>
+            <div class="grid grid-cols-2 gap-4">
+              <div class="col-span-2">
+                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Schema Registry URL</label>
+                <input type="url" x-model="clusterForm.schema_registry_url" placeholder="http://schema-registry:8081"
+                  class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">SR Username</label>
+                <input type="text" x-model="clusterForm.schema_registry_username"
+                  class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">SR Password</label>
+                <input type="password" x-model="clusterForm.schema_registry_password"
+                  class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+              </div>
+            </div>
+          </div>
+
+          <!-- Error -->
+          <template x-if="formError">
+            <div class="rounded-lg p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-400" x-text="formError"></div>
+          </template>
+
+          <!-- Test result -->
+          <template x-if="testResult">
+            <div class="rounded-lg p-3 text-sm"
+                 :class="testResult.ok ? 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400' : 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400'">
+              <template x-if="testResult.ok">
+                <div>
+                  Connected. Brokers: <span x-text="testResult.brokers.map(b => b.host + ':' + b.port).join(', ')"></span>
+                </div>
+              </template>
+              <template x-if="!testResult.ok">
+                <span x-text="testResult.error"></span>
+              </template>
+            </div>
+          </template>
+        </div>
+
+        <!-- Footer -->
+        <div class="flex items-center justify-between gap-3 px-6 py-4 border-t border-gray-100 dark:border-gray-800">
+          <template x-if="editingCluster">
+            <button @click="testClusterConnection()" :disabled="testLoading"
+              class="flex items-center gap-1.5 px-4 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50">
+              <svg x-show="!testLoading" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+              <svg x-show="testLoading" class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+              Test Connection
+            </button>
+          </template>
+          <template x-if="!editingCluster"><div></div></template>
+
+          <div class="flex gap-3">
+            <button type="button" @click="showAddModal = false"
+              class="px-4 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+              Cancel
+            </button>
+            <button type="submit" @click.prevent="saveCluster()"
+              class="px-5 py-2 text-sm rounded-lg bg-brand-600 hover:bg-brand-700 text-white font-medium transition-colors">
+              <span x-text="editingCluster ? 'Save Changes' : 'Add Cluster'"></span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </template>
+
+</div><!-- end x-data -->
+{% endblock %}

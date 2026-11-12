@@ -1,0 +1,120 @@
+/* KafkaLens custom styles */
+
+:root {
+  --sidebar-w: 260px;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+.dark ::-webkit-scrollbar-thumb { background: #374151; }
+
+/* Sidebar */
+.sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  flex-shrink: 0;
+}
+
+/* SSE progress bar animation */
+@keyframes progress-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+.progress-pulse { animation: progress-pulse 1.5s ease-in-out infinite; }
+
+/* JSON viewer */
+.json-viewer {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  border-radius: 0.5rem;
+  overflow: auto;
+  max-height: 400px;
+}
+
+/* Message row expand animation */
+.message-detail {
+  animation: slideDown 0.15s ease-out;
+}
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Cluster badge */
+.proto-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 1px 6px;
+  border-radius: 9999px;
+}
+
+/* Topic row hover */
+.topic-row {
+  transition: background-color 0.1s;
+  cursor: pointer;
+}
+
+/* Search form card */
+.search-card {
+  background: white;
+  border: 1px solid #e5e7eb;
+}
+.dark .search-card {
+  background: #111827;
+  border-color: #1f2937;
+}
+
+/* Table header */
+.results-table th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #f9fafb;
+}
+.dark .results-table th {
+  background: #111827;
+}
+
+/* Copy button */
+.copy-btn {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.group:hover .copy-btn { opacity: 1; }
+
+/* Gradient logo text */
+.logo-text {
+  background: linear-gradient(135deg, #7c3aed, #3b82f6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Format pill colors */
+.fmt-avro     { background:#fef3c7; color:#92400e; }
+.fmt-json     { background:#d1fae5; color:#065f46; }
+.fmt-protobuf { background:#dbeafe; color:#1e40af; }
+.fmt-plain    { background:#f3f4f6; color:#374151; }
+.fmt-error    { background:#fee2e2; color:#991b1b; }
+.dark .fmt-avro     { background:#451a03; color:#fde68a; }
+.dark .fmt-json     { background:#022c22; color:#6ee7b7; }
+.dark .fmt-protobuf { background:#1e3a5f; color:#93c5fd; }
+.dark .fmt-plain    { background:#1f2937; color:#9ca3af; }
+.dark .fmt-error    { background:#450a0a; color:#fca5a5; }
+
+/* Fade in */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fadeIn 0.2s ease-out; }
+
+/* Modal backdrop */
+.modal-backdrop {
+  backdrop-filter: blur(4px);
+  background: rgba(0,0,0,0.5);
+}
