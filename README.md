@@ -52,6 +52,55 @@ Add your cluster with:
 
 ---
 
+## Confluent Cloud
+
+KafkaLens connects to Confluent Cloud using `SASL_SSL` + `PLAIN` — the standard API Key auth Confluent uses everywhere. Schema Registry is a separate credential set.
+
+### Step 1 — Create a Cluster API Key
+
+> **Important:** Confluent Cloud has three distinct API key types. You need a **Cluster API key**, not a Cloud API key (for Confluent management APIs) and not a Schema Registry API key.
+
+1. Log in to [confluent.cloud](https://confluent.cloud) and select your **Environment → Cluster**
+2. In the left sidebar go to **Data integration → API Keys**
+3. Click **+ Add key**
+4. Scope: choose **A specific Kafka cluster** (or a service account scoped to it) — do **not** pick "All clusters" or "Cloud resource management"
+5. Save the **Key** and **Secret** — the secret is only shown once
+
+### Step 2 — Create a Schema Registry API Key (if you use SR)
+
+Schema Registry lives at the Environment level, not the cluster level.
+
+1. In Confluent Cloud, click your **Environment** name in the top breadcrumb
+2. In the right panel, find **Schema Registry** and click **API credentials**
+3. Click **+ Add key** and save the **Key** and **Secret**
+4. Note the **Schema Registry endpoint URL** shown in that same panel (looks like `https://psrc-xxxxx.us-east-2.aws.confluent.cloud`)
+
+### Step 3 — Add the cluster in KafkaLens
+
+Open **Add Cluster** and fill in:
+
+| Field | Where to find it | Value |
+|---|---|---|
+| **Bootstrap Servers** | Cluster → Settings → Endpoints → Bootstrap server | `pkc-xxxxx.us-east-1.aws.confluent.cloud:9092` |
+| **Security Protocol** | — | `SASL_SSL` |
+| **SASL Mechanism** | — | `PLAIN` |
+| **Username** | The cluster API Key from Step 1 | `ABCDEFGH1234WXYZ` |
+| **Password** | The cluster API Secret from Step 1 | `abc123...` |
+| **Schema Registry URL** | Environment → Schema Registry → Settings | `https://psrc-xxxxx.us-east-2.aws.confluent.cloud` |
+| **SR Username** | The SR API Key from Step 2 | `SRKEY1234` |
+| **SR Password** | The SR API Secret from Step 2 | `srsecret...` |
+
+Click **Test Connection** — you should see `Connected. Brokers: pkc-xxxxx...`.
+
+### Notes
+
+- **Dedicated vs Basic/Standard clusters**: the connection details are identical; only throughput and partition limits differ
+- **Private networking (VPC peering / Private Link)**: the bootstrap server address changes but the auth method stays the same — just paste the private endpoint instead
+- **Docker stack**: the `kafka-lens` container has outbound internet access by default, so it can reach Confluent Cloud directly
+- **Topic list**: internal Confluent topics (`_schemas`, `__consumer_offsets`, etc.) will appear in the topic list — they're safe to ignore
+
+---
+
 ## Features
 
 - **Real-time SSE streaming** — progress bar shows messages scanned vs. matched while the search runs; Cancel aborts immediately
