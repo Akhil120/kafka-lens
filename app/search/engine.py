@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import AsyncGenerator, Any
 
 import duckdb
+import orjson
 
 from app.models import ClusterConfig, SearchRequest, KafkaMessage
 from app.kafka.consumer import fetch_partition, resolve_partition_ranges
@@ -16,7 +17,7 @@ from app.schema.deserializer import make_deserializer
 
 _tasks: dict[str, dict] = {}
 
-MAX_PARTITION_THREADS = 3
+MAX_PARTITION_THREADS = 8
 
 
 def create_task(cluster: ClusterConfig, topic: str, request: SearchRequest) -> str:
@@ -131,6 +132,14 @@ def _search_partition(
         )
 
     # Fast path: Python-based filtering — no DuckDB round-trip per batch
+    # Pre-compute bytes needle for raw pre-filter (fulltext, non-Avro only)
+    _use_prefilter = (
+        request.value_filter_mode == "fulltext"
+        and bool(request.value_filter)
+        and not request.key_filter  # key_filter needs key decoded anyway
+    )
+    _needle: bytes | None = request.value_filter.encode("utf-8", errors="replace") if _use_prefilter else None
+
     matched: list[KafkaMessage] = []
     for batch in fetch_partition(
         cluster, topic, pid, start_offset, end_offset, max_messages,
@@ -140,13 +149,21 @@ def _search_partition(
             break
 
         for raw in batch:
+            # Raw bytes pre-filter: skip deserialization when term provably absent.
+            # Avro schema-registry messages start with magic byte 0x00 — skip pre-filter
+            # there since integers are stored as varints (not UTF-8 text).
+            if _needle is not None:
+                vb = raw["value_bytes"] or b""
+                if vb and vb[0] != 0x00 and _needle not in vb:
+                    continue
+
             val, fmt = deserializer.deserialize(
                 raw["value_bytes"], raw["key_bytes"], request.format
             )
             key = raw["key_bytes"].decode("utf-8", errors="replace") if raw["key_bytes"] else None
 
             if isinstance(val, (dict, list)):
-                value_raw = json.dumps(val, default=str)
+                value_raw = orjson.dumps(val).decode("utf-8", errors="replace")
             else:
                 value_raw = str(val) if val is not None else ""
 
@@ -217,7 +234,7 @@ def _search_partition_sql(
                 key = raw["key_bytes"].decode("utf-8", errors="replace") if raw["key_bytes"] else None
 
                 if isinstance(val, (dict, list)):
-                    value_json = json.dumps(val, default=str)
+                    value_json = orjson.dumps(val).decode("utf-8", errors="replace")
                     value_raw = value_json
                 else:
                     value_raw = str(val) if val is not None else ""
@@ -225,7 +242,7 @@ def _search_partition_sql(
 
                 rows.append((
                     raw["partition"], raw["offset"], raw["timestamp"],
-                    key, value_json, value_raw, json.dumps(raw["headers"]), fmt,
+                    key, value_json, value_raw, orjson.dumps(raw["headers"]).decode(), fmt,
                 ))
 
             if rows:
@@ -364,21 +381,21 @@ async def stream_results(task_id: str) -> AsyncGenerator[str, None]:
 
         if scanned != last_scanned or matched != last_matched:
             progress = {"scanned": scanned, "matched": matched}
-            yield f"event: progress\ndata: {json.dumps(progress)}\n\n"
+            yield f"event: progress\ndata: {orjson.dumps(progress).decode()}\n\n"
             last_scanned = scanned
 
         if matched != last_matched and matched > 0:
             msgs_data = [m.model_dump() for m in results]
-            yield f"event: results\ndata: {json.dumps(msgs_data, default=str)}\n\n"
+            yield f"event: results\ndata: {orjson.dumps(msgs_data, option=orjson.OPT_NON_STR_KEYS).decode()}\n\n"
             last_matched = matched
 
         if error:
-            yield f"event: error\ndata: {json.dumps({'error': error})}\n\n"
+            yield f"event: error\ndata: {orjson.dumps({'error': error}).decode()}\n\n"
             break
 
         if done:
             final = [m.model_dump() for m in results]
-            yield f"event: done\ndata: {json.dumps({'scanned': scanned, 'matched': matched, 'messages': final}, default=str)}\n\n"
+            yield f"event: done\ndata: {orjson.dumps({'scanned': scanned, 'matched': matched, 'messages': final}, option=orjson.OPT_NON_STR_KEYS).decode()}\n\n"
             break
 
         changed = scanned != last_scanned or matched != last_matched
