@@ -9,7 +9,10 @@ def _load_or_create_key() -> bytes:
         return kf.read_bytes()
     key = Fernet.generate_key()
     kf.write_bytes(key)
-    kf.chmod(0o600)
+    try:
+        kf.chmod(0o600)  # no-op on Windows; file is in a user-owned directory
+    except NotImplementedError:
+        pass
     return key
 
 
