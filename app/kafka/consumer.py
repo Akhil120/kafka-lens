@@ -2,7 +2,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-import uuid
 from datetime import datetime
 from typing import Generator, Callable
 from confluent_kafka import Consumer, KafkaError, TopicPartition, OFFSET_BEGINNING, OFFSET_END
@@ -44,7 +43,7 @@ def _safe_cfg(cfg: dict) -> dict:
 
 def list_topics(cluster: ClusterConfig) -> list[dict]:
     cfg = build_kafka_config(cluster, {
-        "group.id": "__kafka_lens_meta__",
+        "group.id": "",
         "enable.auto.commit": "false",
     })
     log.info("list_topics: effective config for %r: %s", cluster.name, _safe_cfg(cfg))
@@ -99,7 +98,7 @@ def get_topic_info(cluster: ClusterConfig, topic: str) -> TopicInfo:
         len(p.replicas) for p in topic_meta.partitions.values()
     ) if topic_meta.partitions else 1
 
-    cfg = build_kafka_config(cluster, {"group.id": "__kafka_lens_meta__", "enable.auto.commit": "false"})
+    cfg = build_kafka_config(cluster, {"group.id": "", "enable.auto.commit": "false"})
     consumer = Consumer(cfg, logger=_rdkafka_logger)
 
     tps_low = [TopicPartition(topic, pid, OFFSET_BEGINNING) for pid in partition_ids]
@@ -294,7 +293,7 @@ def fetch_messages(
     batch_size: int = 500,
 ) -> Generator[list[dict], None, None]:
     cfg = build_kafka_config(cluster, {
-        "group.id": "__kafka_lens_search__",
+        "group.id": "",
         "enable.auto.commit": "false",
         "auto.offset.reset": "earliest",
         "fetch.max.bytes": 52428800,
@@ -493,7 +492,7 @@ def fetch_partition(
 ) -> Generator[list[dict], None, None]:
     """Consume a single partition from start_offset up to end_offset, yielding batches."""
     cfg = build_kafka_config(cluster, {
-        "group.id": f"__kafka_lens_{uuid.uuid4().hex}__",
+        "group.id": "",
         "enable.auto.commit": "false",
         "auto.offset.reset": "earliest",
         "fetch.max.bytes": 52428800,
