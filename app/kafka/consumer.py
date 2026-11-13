@@ -138,6 +138,17 @@ def _probe_tls(host: str, port: int, skip_verify: bool = False) -> dict:
     import ssl
 
     result: dict = {"host": host, "port": port}
+
+    # Resolve hostname first so we can show which IP is being contacted.
+    # If per-broker addresses resolve to public IPs instead of PrivateLink,
+    # that's the root cause — needs wildcard DNS on the private zone.
+    try:
+        resolved_ips = list({addr[4][0] for addr in _socket.getaddrinfo(host, port)})
+        result["resolved_ips"] = resolved_ips
+    except OSError as e:
+        result.update({"tls_ok": False, "tls_error": f"DNS resolution failed: {e}"})
+        return result
+
     try:
         ctx = ssl.create_default_context()
         if skip_verify:
@@ -151,7 +162,6 @@ def _probe_tls(host: str, port: int, skip_verify: bool = False) -> dict:
                     "tls_ok": True,
                     "protocol": tls.version(),
                     "cipher": tls.cipher()[0],
-                    "cert_subject": dict(x[0] for x in cert.get("subject", [])),
                     "cert_sans": sans[:5],
                     "cert_expires": cert.get("notAfter"),
                 })
@@ -160,7 +170,10 @@ def _probe_tls(host: str, port: int, skip_verify: bool = False) -> dict:
     except ssl.SSLError as e:
         result.update({"tls_ok": False, "tls_error": f"SSL error: {e.reason or e}"})
     except OSError as e:
-        result.update({"tls_ok": False, "tls_error": f"Network error: {e}"})
+        errno_hint = ""
+        if hasattr(e, "winerror") and e.winerror == 10054:
+            errno_hint = " — TCP RST from server. Broker address likely resolves to a public IP instead of the PrivateLink endpoint. Add a wildcard DNS entry (*.{}) pointing to the PrivateLink IP.".format(".".join(host.split(".")[1:]))
+        result.update({"tls_ok": False, "tls_error": f"Network error: {e}{errno_hint}"})
     return result
 
 

@@ -637,15 +637,16 @@
                 <div class="space-y-1">
                   <div class="font-medium">Connected — <span x-text="testResult.brokers.length"></span> broker(s)</div>
                   <template x-for="b in testResult.brokers" :key="b.id">
-                    <div class="font-mono text-xs">
-                      <span x-text="b.host + ':' + b.port"></span>
+                    <div class="font-mono text-xs mt-1">
+                      <span class="font-semibold" x-text="b.host + ':' + b.port"></span>
                       <template x-if="b.tls">
                         <span>
+                          <span class="ml-1 text-gray-400" x-text="b.tls.resolved_ips ? '→ ' + b.tls.resolved_ips.join(', ') : ''"></span>
                           <template x-if="b.tls.tls_ok">
-                            <span class="ml-2 text-green-600 dark:text-green-400" x-text="'✓ TLS ' + b.tls.protocol + ' / ' + b.tls.cipher"></span>
+                            <span class="ml-2 text-green-600 dark:text-green-400" x-text="'✓ ' + b.tls.protocol + ' / ' + b.tls.cipher"></span>
                           </template>
                           <template x-if="!b.tls.tls_ok">
-                            <span class="ml-2 text-red-500 dark:text-red-400" x-text="'✗ ' + b.tls.tls_error"></span>
+                            <div class="text-red-500 dark:text-red-400 whitespace-normal break-words" x-text="'✗ ' + b.tls.tls_error"></div>
                           </template>
                         </span>
                       </template>
