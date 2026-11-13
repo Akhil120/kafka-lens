@@ -5,7 +5,7 @@ import time
 import uuid
 from datetime import datetime
 from typing import Generator, Callable
-from confluent_kafka import Consumer, TopicPartition, OFFSET_BEGINNING, OFFSET_END
+from confluent_kafka import Consumer, KafkaError, TopicPartition, OFFSET_BEGINNING, OFFSET_END
 from confluent_kafka.admin import AdminClient, NewTopic
 from app.models import ClusterConfig, TopicInfo
 from app.kafka.auth import build_kafka_config, _rdkafka_logger  # noqa: F401 – logger used as Consumer kwarg
@@ -43,8 +43,6 @@ def _safe_cfg(cfg: dict) -> dict:
 
 
 def list_topics(cluster: ClusterConfig) -> list[dict]:
-    from confluent_kafka import KafkaError
-
     cfg = build_kafka_config(cluster, {
         "group.id": "__kafka_lens_meta__",
         "enable.auto.commit": "false",
@@ -350,6 +348,8 @@ def fetch_messages(
         max_messages = request.max_messages
         assignment_tps = [a[0] for a in assignments]
         consecutive_empty = 0
+        consecutive_error_batches = 0
+        last_broker_error = None
 
         while len(exhausted) < len(assignments) and total_fetched < max_messages:
             if cancelled():
@@ -370,9 +370,15 @@ def fetch_messages(
                 continue
 
             consecutive_empty = 0
+            got_real_msg = False
             for msg in msgs:
                 if msg.error():
+                    err = msg.error()
+                    if err.code() != KafkaError._PARTITION_EOF:
+                        last_broker_error = err
+                        log.warning("fetch_messages: broker error: %s", err)
                     continue
+                got_real_msg = True
 
                 pid = msg.partition()
                 if msg.offset() >= end_map.get(pid, 0):
@@ -390,6 +396,15 @@ def fetch_messages(
                     "headers": {k: v.decode("utf-8", errors="replace") for k, v in headers_raw},
                 })
                 total_fetched += 1
+                consecutive_error_batches = 0
+
+            if not got_real_msg and last_broker_error is not None:
+                consecutive_error_batches += 1
+                if consecutive_error_batches >= 5:
+                    raise RuntimeError(
+                        f"Cannot fetch messages: {last_broker_error}. "
+                        "Check broker connectivity — DNS, firewall, SSL, or PrivateLink config."
+                    )
 
             if len(batch) >= batch_size:
                 yield batch
@@ -491,6 +506,8 @@ def fetch_partition(
         batch: list[dict] = []
         total_fetched = 0
         consecutive_empty = 0
+        consecutive_error_batches = 0
+        last_broker_error = None
         last_progress = time.time()
 
         while total_fetched < max_messages:
@@ -512,11 +529,23 @@ def fetch_partition(
                 continue
 
             consecutive_empty = 0
-            last_progress = time.time()
             reached_end = False
+            got_real_msg = False
+
             for msg in msgs:
                 if msg.error():
+                    err = msg.error()
+                    if err.code() == KafkaError._PARTITION_EOF:
+                        reached_end = True
+                        break
+                    last_broker_error = err
+                    log.warning("fetch_partition: broker error p%d: %s", pid, err)
                     continue
+
+                got_real_msg = True
+                last_progress = time.time()
+                consecutive_error_batches = 0
+
                 if msg.offset() >= end_offset:
                     reached_end = True
                     break
@@ -532,6 +561,14 @@ def fetch_partition(
                     "headers": {k: v.decode("utf-8", errors="replace") for k, v in headers_raw},
                 })
                 total_fetched += 1
+
+            if not got_real_msg and last_broker_error is not None:
+                consecutive_error_batches += 1
+                if consecutive_error_batches >= 5:
+                    raise RuntimeError(
+                        f"Cannot fetch from partition {pid}: {last_broker_error}. "
+                        "Check broker connectivity — DNS, firewall, SSL, or PrivateLink config."
+                    )
 
             if len(batch) >= batch_size or reached_end:
                 if batch:
