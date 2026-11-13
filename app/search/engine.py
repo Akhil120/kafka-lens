@@ -6,7 +6,6 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Any
 
@@ -17,91 +16,10 @@ from app.models import ClusterConfig, SearchRequest, KafkaMessage, MessageSummar
 from app.kafka.consumer import fetch_partition, resolve_partition_ranges, fetch_one_message
 from app.schema.deserializer import make_deserializer
 
-import logging
-log = logging.getLogger(__name__)
-
 _tasks: dict[str, dict] = {}
 
 MAX_PARTITION_THREADS = 8
 _PREVIEW_BYTES = 300  # chars stored per matched message for the results table
-
-# ── DuckDB scan cache ─────────────────────────────────────────────────────────
-# For ranges ≤ _CACHE_MAX_SCAN_SIZE messages: fetch everything into an in-memory
-# DuckDB table, cache it for _CACHE_TTL seconds, and re-filter on cache hit.
-# Large ranges fall back to the streaming path (fetch+filter+stop at max_messages).
-
-_CACHE_MAX_SCAN_SIZE  = 500_000   # messages; skip caching above this estimate
-_CACHE_MAX_SCAN_BYTES = 512 * 1024 * 1024  # 512 MB raw value bytes; abort if exceeded
-_CACHE_INSERT_CHUNK   = 2_000    # rows inserted per DuckDB executemany call
-_CACHE_TTL            = 600.0    # seconds a cached scan stays alive
-_CACHE_MAX_ENTRIES    = 6        # max simultaneous cached scans
-
-
-class _CacheTooLargeError(Exception):
-    """Raised mid-fetch when cumulative value bytes exceed _CACHE_MAX_SCAN_BYTES."""
-
-
-@dataclass
-class _ScanCache:
-    con:         duckdb.DuckDBPyConnection
-    total_rows:  int
-    expires:     float
-    lock:        threading.Lock = field(default_factory=threading.Lock)
-
-
-_scan_caches:     dict[str, _ScanCache] = {}
-_scan_cache_lock: threading.Lock = threading.Lock()
-
-
-def _cache_key(cluster_id: str, topic: str, ranges: dict[int, tuple[int, int]]) -> str:
-    return f"{cluster_id}:{topic}:{sorted(ranges.items())}"
-
-
-def _estimated_size(ranges: dict[int, tuple[int, int]]) -> int:
-    return sum(max(0, e - s) for s, e in ranges.values())
-
-
-def _get_cached(cluster_id: str, topic: str, ranges: dict[int, tuple[int, int]]) -> _ScanCache | None:
-    key = _cache_key(cluster_id, topic, ranges)
-    with _scan_cache_lock:
-        entry = _scan_caches.get(key)
-        if entry is None:
-            return None
-        if time.monotonic() > entry.expires:
-            _scan_caches.pop(key, None)
-            try:
-                entry.con.close()
-            except Exception:
-                pass
-            return None
-        return entry
-
-
-def _store_cached(
-    cluster_id: str, topic: str, ranges: dict[int, tuple[int, int]],
-    con: duckdb.DuckDBPyConnection, total_rows: int,
-) -> _ScanCache:
-    key = _cache_key(cluster_id, topic, ranges)
-    entry = _ScanCache(con=con, total_rows=total_rows, expires=time.monotonic() + _CACHE_TTL)
-    with _scan_cache_lock:
-        # Evict oldest if at capacity
-        if len(_scan_caches) >= _CACHE_MAX_ENTRIES:
-            oldest = min(_scan_caches, key=lambda k: _scan_caches[k].expires)
-            evicted = _scan_caches.pop(oldest)
-            try:
-                evicted.con.close()
-            except Exception:
-                pass
-        # Another thread may have cached same key while we fetched — prefer theirs.
-        existing = _scan_caches.get(key)
-        if existing and time.monotonic() < existing.expires:
-            try:
-                con.close()
-            except Exception:
-                pass
-            return existing
-        _scan_caches[key] = entry
-    return entry
 
 
 def create_task(cluster: ClusterConfig, topic: str, request: SearchRequest) -> str:
@@ -359,179 +277,6 @@ def _search_partition_sql(
         con.close()
 
 
-_CREATE_MSG_TABLE = """
-CREATE TABLE messages (
-    partition  INTEGER,
-    msg_offset BIGINT,
-    timestamp  BIGINT,
-    key        VARCHAR,
-    value_raw  VARCHAR,
-    value_json JSON,
-    headers    VARCHAR,
-    fmt        VARCHAR
-)
-"""
-
-
-def _fetch_all_to_duckdb(
-    cluster: ClusterConfig,
-    topic: str,
-    partition_ranges: dict[int, tuple[int, int]],
-    request: SearchRequest,
-    cancel_event: threading.Event,
-    task: dict,
-) -> duckdb.DuckDBPyConnection:
-    """Fetch ALL messages in partition_ranges into an in-memory DuckDB table.
-
-    Inserts in chunks of _CACHE_INSERT_CHUNK rows to bound Python-side memory.
-    Raises _CacheTooLargeError if cumulative value bytes exceed _CACHE_MAX_SCAN_BYTES.
-    """
-    con = duckdb.connect(":memory:")
-    con.execute(_CREATE_MSG_TABLE)
-    insert_lock = threading.Lock()
-    byte_total = [0]   # cumulative value_raw bytes; guarded by insert_lock (reused)
-    too_large_event = threading.Event()
-
-    def _fetch_one_partition(pid: int, start: int, end: int) -> None:
-        deserializer = make_deserializer(
-            cluster.schema_registry_url,
-            cluster.schema_registry_username,
-            cluster.schema_registry_password,
-            request.schema_registry_url,
-        )
-        rows: list[tuple] = []
-        for batch in fetch_partition(
-            cluster, topic, pid, start, end, 10_000_000,
-            lambda: cancel_event.is_set() or too_large_event.is_set(), batch_size=2000,
-        ):
-            if cancel_event.is_set() or too_large_event.is_set():
-                break
-
-            batch_bytes = 0
-            for raw in batch:
-                val, fmt = deserializer.deserialize(raw["value_bytes"], raw["key_bytes"], request.format)
-                raw["value_bytes"] = None
-                key = deserializer.deserialize_key(raw["key_bytes"])
-                if isinstance(val, (dict, list)):
-                    value_raw = orjson.dumps(val).decode("utf-8", errors="replace")
-                    value_json = value_raw
-                else:
-                    value_raw = str(val) if val is not None else ""
-                    value_json = None
-
-                batch_bytes += len(value_raw)
-                rows.append((
-                    raw["partition"], raw["offset"], raw["timestamp"],
-                    key, value_raw, value_json,
-                    orjson.dumps(raw["headers"]).decode(), fmt,
-                ))
-
-            with task["lock"]:
-                task["scanned"] += len(batch)
-
-            # Update shared byte counter and flush rows once per batch — not per message.
-            if rows:
-                with insert_lock:
-                    byte_total[0] += batch_bytes
-                    over = byte_total[0] > _CACHE_MAX_SCAN_BYTES
-                    if not over:
-                        con.executemany("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?)", rows)
-                if over:
-                    too_large_event.set()
-                rows = []
-
-            if cancel_event.is_set() or too_large_event.is_set():
-                break
-
-    n = len(partition_ranges)
-    with ThreadPoolExecutor(max_workers=min(n, MAX_PARTITION_THREADS)) as pool:
-        futures = [
-            pool.submit(_fetch_one_partition, pid, start, end)
-            for pid, (start, end) in partition_ranges.items()
-        ]
-        for f in as_completed(futures):
-            if cancel_event.is_set() or too_large_event.is_set():
-                break
-            f.result()   # propagate any exception
-
-    if too_large_event.is_set():
-        try:
-            con.close()
-        except Exception:
-            pass
-        raise _CacheTooLargeError(
-            f"Scan exceeded {_CACHE_MAX_SCAN_BYTES // (1024 * 1024)} MB; falling back to streaming"
-        )
-
-    return con
-
-
-def _query_duckdb_cache(
-    entry: _ScanCache,
-    request: SearchRequest,
-) -> tuple[list[dict], bool]:
-    """Run search filters against a cached DuckDB table, return (summaries, capped)."""
-    clauses: list[str] = []
-    params:  list[Any] = []
-
-    if request.key_filter:
-        kf, km = request.key_filter, request.key_match
-        if km == "exact":
-            clauses.append("key = ?"); params.append(kf)
-        elif km == "prefix":
-            clauses.append("key LIKE ?"); params.append(f"{kf}%")
-        elif km == "regex":
-            clauses.append("regexp_matches(key, ?)"); params.append(kf)
-        else:
-            clauses.append("key ILIKE ?"); params.append(f"%{kf}%")
-
-    if request.value_filter:
-        vf, vm = request.value_filter, request.value_filter_mode
-        if vm == "jsonpath":
-            path, _, expected = vf.partition("=")
-            path, expected = path.strip(), expected.strip().strip("\"'")
-            if expected:
-                clauses.append("json_extract_string(value_json, ?) = ?")
-                params.extend([path, expected])
-            else:
-                clauses.append("json_extract_string(value_json, ?) IS NOT NULL")
-                params.append(path)
-        elif vm == "sql":
-            clauses.append(f"({vf})")
-        else:
-            clauses.append("value_raw ILIKE ?"); params.append(f"%{vf}%")
-
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    # Fetch one extra row so we can detect capping without a separate COUNT().
-    limit = request.max_messages + 1
-    sql = (
-        f"SELECT partition, msg_offset, timestamp, key, value_raw, headers, fmt "
-        f"FROM messages {where} "
-        f"ORDER BY timestamp, partition, msg_offset "
-        f"LIMIT ?"
-    )
-    params.append(limit)
-
-    with entry.lock:
-        rows = entry.con.execute(sql, params).fetchall()
-
-    capped = len(rows) > request.max_messages
-    rows = rows[:request.max_messages]
-
-    summaries = [{
-        "partition": r[0],
-        "offset":    r[1],
-        "timestamp": r[2],
-        "timestamp_human": _ts_to_human(r[2]),
-        "key":       r[3],
-        "preview":   (r[4] or "")[:_PREVIEW_BYTES],
-        "headers":   json.loads(r[5]) if r[5] else {},
-        "format":    r[6],
-    } for r in rows]
-
-    return summaries, capped
-
-
 def _run_search(task_id: str) -> None:
     task = _tasks.get(task_id)
     if task is None:
@@ -541,20 +286,46 @@ def _run_search(task_id: str) -> None:
     request: SearchRequest = task["request"]
     cancel_event: threading.Event = task["cancel"]
 
+    all_matched: list[dict] = []
+
     try:
         partition_ranges = resolve_partition_ranges(cluster, topic, request)
         if not partition_ranges:
             return
 
-        est = _estimated_size(partition_ranges)
-        use_cache = est <= _CACHE_MAX_SCAN_SIZE
+        n_partitions = len(partition_ranges)
 
-        if use_cache:
-            _run_search_cached(task_id, task, cluster, topic, request, partition_ranges, cancel_event)
-        else:
-            log.info("scan cache skipped for %s/%s — estimated %d messages (limit %d)",
-                     cluster.name, topic, est, _CACHE_MAX_SCAN_SIZE)
-            _run_search_streaming(task_id, task, cluster, topic, request, partition_ranges, cancel_event)
+        with ThreadPoolExecutor(max_workers=min(n_partitions, MAX_PARTITION_THREADS)) as pool:
+            futures = {
+                pool.submit(
+                    _search_partition,
+                    cluster, topic, pid, start, end, request.max_messages,
+                    request, cancel_event, task,
+                ): pid
+                for pid, (start, end) in partition_ranges.items()
+            }
+
+            for future in as_completed(futures):
+                if cancel_event.is_set():
+                    break
+                try:
+                    partition_results = future.result()
+                    all_matched.extend(partition_results)
+                    all_matched.sort(key=lambda m: (m["timestamp"], m["partition"], m["offset"]))
+                    if len(all_matched) > request.max_messages:
+                        all_matched = all_matched[:request.max_messages]
+                        cancel_event.set()
+                        with task["lock"]:
+                            task["results"] = list(all_matched)
+                            task["matched"] = len(all_matched)
+                            task["results_capped"] = True
+                    else:
+                        with task["lock"]:
+                            task["results"] = list(all_matched)
+                            task["matched"] = len(all_matched)
+                except Exception as e:
+                    with task["lock"]:
+                        task["error"] = str(e)
 
     except Exception as e:
         with task["lock"]:
@@ -562,105 +333,6 @@ def _run_search(task_id: str) -> None:
     finally:
         with task["lock"]:
             task["done"] = True
-
-
-def _run_search_cached(
-    task_id: str,
-    task: dict,
-    cluster: ClusterConfig,
-    topic: str,
-    request: SearchRequest,
-    partition_ranges: dict[int, tuple[int, int]],
-    cancel_event: threading.Event,
-) -> None:
-    """Cache path: fetch once into DuckDB, re-filter on subsequent hits."""
-    entry = _get_cached(cluster.id, topic, partition_ranges)
-
-    if entry is not None:
-        log.info("scan cache HIT for %s/%s (%d rows)", cluster.name, topic, entry.total_rows)
-        with task["lock"]:
-            task["scanned"] = entry.total_rows
-        summaries, capped = _query_duckdb_cache(entry, request)
-        with task["lock"]:
-            task["results"] = summaries
-            task["matched"] = len(summaries)
-            task["results_capped"] = capped
-        return
-
-    log.info("scan cache MISS for %s/%s — fetching %d partitions",
-             cluster.name, topic, len(partition_ranges))
-    try:
-        con = _fetch_all_to_duckdb(cluster, topic, partition_ranges, request, cancel_event, task)
-    except _CacheTooLargeError as e:
-        log.warning("scan cache too large for %s/%s — falling back to streaming: %s",
-                    cluster.name, topic, e)
-        with task["lock"]:
-            task["scanned"] = 0
-        _run_search_streaming(task_id, task, cluster, topic, request, partition_ranges, cancel_event)
-        return
-
-    if cancel_event.is_set():
-        try:
-            con.close()
-        except Exception:
-            pass
-        return
-
-    with task["lock"]:
-        total_rows = task["scanned"]
-
-    entry = _store_cached(cluster.id, topic, partition_ranges, con, total_rows)
-    summaries, capped = _query_duckdb_cache(entry, request)
-    with task["lock"]:
-        task["results"] = summaries
-        task["matched"] = len(summaries)
-        task["results_capped"] = capped
-
-
-def _run_search_streaming(
-    task_id: str,
-    task: dict,
-    cluster: ClusterConfig,
-    topic: str,
-    request: SearchRequest,
-    partition_ranges: dict[int, tuple[int, int]],
-    cancel_event: threading.Event,
-) -> None:
-    """Streaming path for large ranges: fetch+filter+stop at max_messages."""
-    all_matched: list[dict] = []
-    n_partitions = len(partition_ranges)
-
-    with ThreadPoolExecutor(max_workers=min(n_partitions, MAX_PARTITION_THREADS)) as pool:
-        futures = {
-            pool.submit(
-                _search_partition,
-                cluster, topic, pid, start, end, request.max_messages,
-                request, cancel_event, task,
-            ): pid
-            for pid, (start, end) in partition_ranges.items()
-        }
-
-        for future in as_completed(futures):
-            if cancel_event.is_set():
-                break
-            try:
-                partition_results = future.result()
-                all_matched.extend(partition_results)
-                all_matched.sort(key=lambda m: (m["timestamp"], m["partition"], m["offset"]))
-                if len(all_matched) > request.max_messages:
-                    all_matched = all_matched[:request.max_messages]
-                    cancel_event.set()
-                    with task["lock"]:
-                        task["results"] = list(all_matched)
-                        task["matched"] = len(all_matched)
-                        task["results_capped"] = True
-                else:
-                    with task["lock"]:
-                        task["results"] = list(all_matched)
-                        task["matched"] = len(all_matched)
-            except Exception as e:
-                with task["lock"]:
-                    task["error"] = str(e)
 
 
 def _row_to_summary(row: tuple) -> dict:

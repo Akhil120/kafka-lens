@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Body, HTTPException
 from app.models import ClusterConfig, ClusterSummary, TestConnectionResponse
 from app import store
-from app.kafka.consumer import test_connection, invalidate_admin, _consumer_pool
+from app.kafka.consumer import test_connection, invalidate_admin
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])
 
@@ -65,7 +65,6 @@ def update_cluster(cluster_id: str, data: dict = Body(...)):
         raise HTTPException(status_code=422, detail=str(e))
     cluster.id = cluster_id
     invalidate_admin(cluster_id)
-    _consumer_pool.invalidate(cluster_id)
     store.save_cluster(cluster)
     return ClusterSummary(
         id=cluster.id,
@@ -86,7 +85,6 @@ def delete_cluster(cluster_id: str):
     if not store.delete_cluster(cluster_id):
         raise HTTPException(status_code=404, detail="Cluster not found")
     invalidate_admin(cluster_id)
-    _consumer_pool.invalidate(cluster_id)
 
 
 @router.post("/{cluster_id}/test", response_model=TestConnectionResponse)
