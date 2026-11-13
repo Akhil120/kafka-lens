@@ -5,8 +5,7 @@ from app.models import ClusterConfig
 def build_kafka_config(cluster: ClusterConfig, extra: dict | None = None) -> dict:
     cfg: dict = {
         "bootstrap.servers": cluster.bootstrap_servers,
-        "socket.timeout.ms": 10000,
-        "broker.address.family": "v4",
+        "socket.timeout.ms": 30000,
     }
 
     proto = cluster.security_protocol

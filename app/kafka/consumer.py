@@ -86,13 +86,38 @@ def get_topic_info(cluster: ClusterConfig, topic: str) -> TopicInfo:
 
 
 def test_connection(cluster: ClusterConfig) -> list[dict]:
-    admin = make_admin(cluster)
-    meta = admin.list_topics(timeout=10)
-    brokers = [
-        {"id": b.id, "host": b.host, "port": b.port}
-        for b in meta.brokers.values()
-    ]
-    return brokers
+    import logging
+
+    log_lines: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            log_lines.append(record.getMessage())
+
+    logger = logging.getLogger(f"kafka_test_{cluster.id}")
+    logger.setLevel(logging.DEBUG)
+    handler = _Capture()
+    logger.addHandler(handler)
+
+    cfg = build_kafka_config(cluster)
+    cfg["debug"] = "ssl,broker,security"
+
+    try:
+        admin = AdminClient(cfg, logger=logger)
+        meta = admin.list_topics(timeout=15)
+        brokers = [
+            {"id": b.id, "host": b.host, "port": b.port}
+            for b in meta.brokers.values()
+        ]
+        return brokers
+    except Exception as exc:
+        ssl_lines = [l for l in log_lines if any(
+            k in l.lower() for k in ("ssl", "tls", "handshake", "cert", "error")
+        )]
+        detail = "\n".join(ssl_lines[-10:]) if ssl_lines else ""
+        raise RuntimeError(f"{exc}" + (f"\n\nSSL debug:\n{detail}" if detail else "")) from exc
+    finally:
+        logger.removeHandler(handler)
 
 
 def _resolve_offsets_from_timestamps(
