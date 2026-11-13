@@ -1,3 +1,5 @@
+import logging
+import sys
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -9,6 +11,15 @@ from app.api import topics as topics_router
 from app.api import search as search_router
 from app import store, __version__
 from app.models import ClusterSummary
+
+# Attach an explicit handler to the "app" namespace so our logs always appear
+# on stderr regardless of how uvicorn configures (or doesn't configure) root.
+_handler = logging.StreamHandler(sys.stderr)
+_handler.setFormatter(logging.Formatter("%(levelname)-8s %(name)s: %(message)s"))
+_app_log = logging.getLogger("app")
+_app_log.addHandler(_handler)
+_app_log.setLevel(logging.DEBUG)
+_app_log.propagate = False
 
 _HERE = Path(__file__).parent  # app/ directory
 

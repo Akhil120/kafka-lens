@@ -36,18 +36,43 @@ def invalidate_admin(cluster_id: str) -> None:
 
 
 def list_topics(cluster: ClusterConfig) -> list[dict]:
-    admin = make_admin(cluster)
-    meta = admin.list_topics(timeout=15)
-    raw = list(meta.topics.keys())
-    log.warning("list_topics raw from Kafka: %d total, names=%s", len(raw), raw[:20])
+    log.info("list_topics: creating AdminClient for cluster %r (%s)", cluster.name, cluster.bootstrap_servers)
+    try:
+        admin = make_admin(cluster)
+    except Exception as exc:
+        log.error("list_topics: AdminClient creation failed for %r: %s", cluster.name, exc, exc_info=True)
+        raise
+
+    log.info("list_topics: calling admin.list_topics(timeout=15) for %r", cluster.name)
+    try:
+        meta = admin.list_topics(timeout=15)
+    except Exception as exc:
+        log.error("list_topics: admin.list_topics() raised for %r: %s", cluster.name, exc, exc_info=True)
+        raise
+
+    raw_names = list(meta.topics.keys())
+    log.info(
+        "list_topics: Kafka returned %d raw topics for %r (first 20: %s)",
+        len(raw_names), cluster.name, raw_names[:20],
+    )
+
     topics = []
+    skipped_internal = 0
     for name, topic_meta in sorted(meta.topics.items()):
+        if topic_meta.error:
+            log.warning("list_topics: topic %r has metadata error: %s", name, topic_meta.error)
         if name.startswith("_"):
+            skipped_internal += 1
             continue
         topics.append({
             "name": name,
             "partitions": len(topic_meta.partitions),
         })
+
+    log.info(
+        "list_topics: returning %d user topics for %r (%d internal skipped)",
+        len(topics), cluster.name, skipped_internal,
+    )
     return topics
 
 
