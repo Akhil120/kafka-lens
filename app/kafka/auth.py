@@ -6,6 +6,7 @@ def build_kafka_config(cluster: ClusterConfig, extra: dict | None = None) -> dic
     cfg: dict = {
         "bootstrap.servers": cluster.bootstrap_servers,
         "socket.timeout.ms": 30000,
+        "broker.address.family": "v4",
     }
 
     proto = cluster.security_protocol
