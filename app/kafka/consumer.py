@@ -14,6 +14,52 @@ log = logging.getLogger(__name__)
 _admin_cache: dict[str, AdminClient] = {}
 _admin_lock = threading.Lock()
 
+# ── Consumer pool ────────────────────────────────────────────────────────────
+# Keeps librdkafka Consumer objects alive between partition scans so we avoid
+# paying the SASL handshake + metadata round-trip cost on every search.
+
+_POOL_FETCH_CFG: dict = {
+    "enable.auto.commit": "false",
+    "auto.offset.reset":  "earliest",
+    "fetch.max.bytes":          str(50 * 1024 * 1024),   # 50 MB total
+    "max.partition.fetch.bytes": str(20 * 1024 * 1024),  # 20 MB per partition
+}
+_POOL_MAX_PER_CLUSTER = 4
+
+
+class _ConsumerPool:
+    def __init__(self) -> None:
+        self._pool: dict[str, list[Consumer]] = {}
+        self._lock = threading.Lock()
+
+    def get(self, cluster: ClusterConfig) -> Consumer:
+        with self._lock:
+            pool = self._pool.get(cluster.id)
+            if pool:
+                return pool.pop()
+        cfg = build_kafka_config(cluster, {"group.id": cluster.consumer_group_id, **_POOL_FETCH_CFG})
+        return Consumer(cfg, logger=_rdkafka_logger)
+
+    def release(self, cluster_id: str, consumer: Consumer) -> None:
+        with self._lock:
+            pool = self._pool.setdefault(cluster_id, [])
+            if len(pool) < _POOL_MAX_PER_CLUSTER:
+                pool.append(consumer)
+                return
+        consumer.close()
+
+    def invalidate(self, cluster_id: str) -> None:
+        with self._lock:
+            consumers = self._pool.pop(cluster_id, [])
+        for c in consumers:
+            try:
+                c.close()
+            except Exception:
+                pass
+
+
+_consumer_pool = _ConsumerPool()
+
 
 def make_admin(cluster: ClusterConfig) -> AdminClient:
     cfg = build_kafka_config(cluster)
@@ -522,18 +568,12 @@ def fetch_partition(
     end_offset: int,
     max_messages: int,
     cancelled: Callable[[], bool],
-    batch_size: int = 50000,
+    batch_size: int = 2000,
     idle_timeout: float = 30.0,
 ) -> Generator[list[dict], None, None]:
     """Consume a single partition from start_offset up to end_offset, yielding batches."""
-    cfg = build_kafka_config(cluster, {
-        "group.id": cluster.consumer_group_id,
-        "enable.auto.commit": "false",
-        "auto.offset.reset": "earliest",
-        "fetch.max.bytes": 20971520,           # 20 MB total per fetch
-        "max.partition.fetch.bytes": 10485760,  # 10 MB per partition per fetch
-    })
-    consumer = Consumer(cfg, logger=_rdkafka_logger)
+    consumer = _consumer_pool.get(cluster)
+    _error = False
     try:
         consumer.assign([TopicPartition(topic, pid, start_offset)])
 
@@ -628,5 +668,15 @@ def fetch_partition(
 
         if batch:
             yield batch
+    except Exception:
+        _error = True
+        raise
     finally:
-        consumer.close()
+        if _error:
+            try:
+                consumer.close()
+            except Exception:
+                pass
+        else:
+            # GeneratorExit (caller broke) or normal completion — both safe to pool.
+            _consumer_pool.release(cluster.id, consumer)
