@@ -7,7 +7,7 @@ from typing import Generator, Callable
 from confluent_kafka import Consumer, TopicPartition, OFFSET_BEGINNING, OFFSET_END
 from confluent_kafka.admin import AdminClient, NewTopic
 from app.models import ClusterConfig, TopicInfo
-from app.kafka.auth import build_kafka_config
+from app.kafka.auth import build_kafka_config, _rdkafka_logger  # noqa: F401 – logger used as Consumer kwarg
 
 _admin_cache: dict[str, AdminClient] = {}
 _admin_lock = threading.Lock()
@@ -15,7 +15,7 @@ _admin_lock = threading.Lock()
 
 def make_admin(cluster: ClusterConfig) -> AdminClient:
     cfg = build_kafka_config(cluster)
-    return AdminClient(cfg)
+    return AdminClient(cfg)  # AdminClient doesn't support logger kwarg
 
 
 def get_admin(cluster: ClusterConfig) -> AdminClient:
@@ -59,7 +59,7 @@ def get_topic_info(cluster: ClusterConfig, topic: str) -> TopicInfo:
     ) if topic_meta.partitions else 1
 
     cfg = build_kafka_config(cluster, {"group.id": "__kafka_lens_meta__", "enable.auto.commit": "false"})
-    consumer = Consumer(cfg)
+    consumer = Consumer(cfg, logger=_rdkafka_logger)
 
     tps_low = [TopicPartition(topic, pid, OFFSET_BEGINNING) for pid in partition_ids]
     tps_high = [TopicPartition(topic, pid, OFFSET_END) for pid in partition_ids]
@@ -110,12 +110,7 @@ def test_connection(cluster: ClusterConfig) -> list[dict]:
             for b in meta.brokers.values()
         ]
     except Exception as exc:
-        from app.kafka.auth import get_rdkafka_logs
-        msg = str(exc)
-        logs = get_rdkafka_logs()
-        if logs:
-            msg += "\n\n--- librdkafka debug log ---\n" + "\n".join(logs[-40:])
-        raise RuntimeError(msg) from exc
+        raise RuntimeError(str(exc)) from exc
 
 
 def _resolve_offsets_from_timestamps(
@@ -165,7 +160,7 @@ def fetch_messages(
         "fetch.max.bytes": 52428800,
         "max.partition.fetch.bytes": 10485760,
     })
-    consumer = Consumer(cfg)
+    consumer = Consumer(cfg, logger=_rdkafka_logger)
 
     try:
         admin = make_admin(cluster)
@@ -347,7 +342,7 @@ def fetch_partition(
         "fetch.max.bytes": 52428800,
         "max.partition.fetch.bytes": 10485760,
     })
-    consumer = Consumer(cfg)
+    consumer = Consumer(cfg, logger=_rdkafka_logger)
     try:
         consumer.assign([TopicPartition(topic, pid, start_offset)])
 

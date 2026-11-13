@@ -40,7 +40,6 @@ def build_kafka_config(cluster: ClusterConfig, extra: dict | None = None) -> dic
         "bootstrap.servers": cluster.bootstrap_servers,
         "socket.timeout.ms": 30000,
         "broker.address.family": "v4",
-        "logger": _rdkafka_logger,
     }
 
     proto = cluster.security_protocol
