@@ -16,7 +16,6 @@ class _BufHandler(logging.Handler):
 _rdkafka_logger = logging.getLogger("librdkafka")
 _rdkafka_logger.setLevel(logging.DEBUG)
 _rdkafka_logger.addHandler(_BufHandler(logging.DEBUG))
-_rdkafka_logger.propagate = False
 
 
 def get_rdkafka_logs() -> list[str]:
