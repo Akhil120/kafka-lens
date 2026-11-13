@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from app.models import ClusterConfig, ClusterSummary, TestConnectionResponse
 from app import store
 from app.kafka.consumer import test_connection, invalidate_admin
@@ -38,7 +38,21 @@ def create_cluster(cluster: ClusterConfig):
 
 
 @router.put("/{cluster_id}", response_model=ClusterSummary)
-def update_cluster(cluster_id: str, cluster: ClusterConfig):
+def update_cluster(cluster_id: str, data: dict = Body(...)):
+    existing = store.get_cluster(cluster_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+    # Merge stored secrets so the edit form doesn't need to re-enter passwords
+    if not data.get("password"):
+        data["password"] = existing.password
+    if not data.get("schema_registry_password"):
+        data["schema_registry_password"] = existing.schema_registry_password
+    if data.get("ssl") and not data["ssl"].get("key_password") and existing.ssl:
+        data["ssl"]["key_password"] = existing.ssl.key_password
+    try:
+        cluster = ClusterConfig.model_validate(data)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
     cluster.id = cluster_id
     invalidate_admin(cluster_id)
     store.save_cluster(cluster)
