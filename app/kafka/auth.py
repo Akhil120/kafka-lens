@@ -1,11 +1,14 @@
 from __future__ import annotations
 import collections
 import logging
+import sys
 from app.models import ClusterConfig
 
 # Buffer the last 100 librdkafka log lines so test_connection can include them
 # in error messages when SSL/broker failures occur.
 _rdkafka_log_buffer: collections.deque[str] = collections.deque(maxlen=100)
+
+_fmt = logging.Formatter("%(levelname)s [librdkafka] %(message)s")
 
 
 class _BufHandler(logging.Handler):
@@ -13,9 +16,19 @@ class _BufHandler(logging.Handler):
         _rdkafka_log_buffer.append(self.format(record))
 
 
+# Use a dedicated logger with its own stderr handler so logs always appear in
+# the terminal regardless of how uvicorn configures the root logger level.
 _rdkafka_logger = logging.getLogger("librdkafka")
 _rdkafka_logger.setLevel(logging.DEBUG)
-_rdkafka_logger.addHandler(_BufHandler(logging.DEBUG))
+_rdkafka_logger.propagate = False  # don't double-emit via root logger
+
+_stderr_handler = logging.StreamHandler(sys.stderr)
+_stderr_handler.setFormatter(_fmt)
+_rdkafka_logger.addHandler(_stderr_handler)
+
+_buf_handler = _BufHandler()
+_buf_handler.setFormatter(_fmt)
+_rdkafka_logger.addHandler(_buf_handler)
 
 
 def get_rdkafka_logs() -> list[str]:
