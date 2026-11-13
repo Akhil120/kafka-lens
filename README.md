@@ -124,8 +124,11 @@ Click **Test Connection** — you should see `Connected. Brokers: pkc-xxxxx...`.
 ## Features
 
 - **Real-time SSE streaming** — progress bar shows messages scanned vs. matched while the search runs; Cancel aborts immediately
-- **Avro / JSON / Protobuf / plain-text auto-detection** — magic byte + schema ID decoded against Confluent Schema Registry
-- **DuckDB SQL engine** — every batch of messages is inserted into an in-process columnar table; filters run as real SQL
+- **Avro / JSON / Protobuf / plain-text auto-detection** — magic byte + schema ID decoded against Confluent Schema Registry; Avro-encoded keys also decoded via schema registry
+- **DuckDB SQL mode** — messages inserted into an in-process columnar table; filters run as real SQL (`value_json`, `value_raw`, `key` columns available)
+- **Partition overview** — per-topic table of low/high watermarks and message count per partition; click **Filter** on any row to scope the search to that partition
+- **Resizable sidebar** — drag the divider between sidebar and main panel; width persisted in `localStorage`
+- **Autocomplete dropdowns** — topic filter shows matching topics across all loaded clusters as you type; key/value filter fields show recent search history (up to 15 entries per field, stored in `localStorage`)
 - **Paginated results** — rows-per-page selector (25 / 50 / 100 / 200), jump-to-page input, Prev / Next — no endless scroll
 - **Fernet-encrypted credential storage** — passwords and SR secrets never stored in plain text (`~/.kafka-lens/`)
 - **Dark / light theme** — persisted in `localStorage`
@@ -142,7 +145,9 @@ Click **Test Connection** — you should see `Connected. Brokers: pkc-xxxxx...`.
 
 **Key filter** supports `contains` / `prefix` / `exact` / `regex` match modes.
 
-**Scope controls:** from/to timestamp, from/to offset, partition list, format override, message limit.
+**Scope controls:** from/to timestamp, from/to offset, partition list (comma-separated IDs — or click **Filter** in the partition overview), format override, message limit.
+
+> **Tip:** Contextual hints appear below each search field explaining the expected syntax for the active mode.
 
 ---
 
@@ -185,13 +190,14 @@ Kafka (KRaft, Docker) + Confluent Schema Registry (Docker)
 
 1. `POST /api/clusters/{id}/topics/{topic}/search` → returns `{task_id}`
 2. `GET /api/search/{task_id}/stream` opens SSE
-3. AdminClient resolves timestamp range → per-partition start offsets
-4. Consumer seeks each partition; consumes in batches of 500 messages
-5. Each batch → deserializer (Avro / JSON / Protobuf / plain) → Python dicts
-6. Batch inserted into DuckDB in-memory table (`value_json JSON`, `key VARCHAR`, `msg_offset BIGINT`, ...)
-7. SQL filter applied; matching rows appended to `results`
-8. `event: progress` sent every batch; `event: done` closes stream with final payload
-9. `DELETE /api/search/{task_id}` cancels an in-flight task
+3. AdminClient resolves timestamp/offset range → per-partition start offsets (up to 8 partitions in parallel)
+4. Each partition thread seeks its Consumer to the start offset and streams batches
+5. Each message → deserializer (Avro / JSON / Protobuf / plain) → Python dict; key also deserialized via schema registry if Confluent-encoded
+6. For **fulltext / jsonpath / key** modes: filters applied in Python per message; only matched rows kept
+7. For **SQL** mode: messages inserted into an in-process DuckDB table; `WHERE` clause applied at the end
+8. Results capped at `max_messages`; search stops early once the cap is reached
+9. `event: progress` emitted every batch; `event: done` closes stream with final payload
+10. `DELETE /api/search/{task_id}` cancels an in-flight task; on-demand message expand re-fetches the single message by partition+offset
 
 ---
 
