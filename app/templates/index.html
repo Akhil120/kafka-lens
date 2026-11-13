@@ -98,7 +98,10 @@
                 </div>
               </template>
 
-              <template x-if="!activeClusters[cluster.id]?.loading && filteredTopics(cluster.id).length === 0 && activeClusters[cluster.id]?.topics.length === 0">
+              <template x-if="!activeClusters[cluster.id]?.loading && activeClusters[cluster.id]?.error">
+                <div class="px-4 py-2 text-xs text-red-500 dark:text-red-400 break-words" x-text="activeClusters[cluster.id].error"></div>
+              </template>
+              <template x-if="!activeClusters[cluster.id]?.loading && !activeClusters[cluster.id]?.error && filteredTopics(cluster.id).length === 0 && activeClusters[cluster.id]?.topics.length === 0">
                 <div class="px-10 py-2 text-xs text-gray-400">No topics found</div>
               </template>
             </div>

@@ -67,12 +67,17 @@ function kafkaApp(initialClusters) {
     async loadTopics(cluster) {
       const state = this.activeClusters[cluster.id];
       state.loading = true;
+      state.error = null;
       try {
         const resp = await fetch(`/api/clusters/${cluster.id}/topics`);
-        if (!resp.ok) throw new Error(await resp.text());
+        if (!resp.ok) {
+          const body = await resp.json().catch(() => ({ detail: resp.statusText }));
+          throw new Error(body.detail || resp.statusText);
+        }
         state.topics = await resp.json();
       } catch (e) {
         state.topics = [];
+        state.error = e.message;
       } finally {
         state.loading = false;
       }
