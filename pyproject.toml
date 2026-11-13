@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kafka-lens"
-version = "0.2.21"
+version = "0.2.22"
 description = "Fast Kafka message browser — a lightweight alternative to Confluent UI"
 requires-python = ">=3.11"
 dependencies = [
@@ -19,6 +19,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "pydantic-settings>=2.3.0",
     "protobuf>=4.25.3",
+    "kafka-python-ng>=2.2.0",
     "aiofiles>=23.2.1",
     "orjson>=3.9.0",
     "certifi>=2024.0.0",

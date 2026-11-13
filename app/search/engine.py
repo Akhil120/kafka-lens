@@ -12,7 +12,8 @@ import duckdb
 import orjson
 
 from app.models import ClusterConfig, SearchRequest, KafkaMessage
-from app.kafka.consumer import fetch_partition, resolve_partition_ranges
+from app.kafka.fetcher import fetch_partition
+from app.kafka.consumer import resolve_partition_ranges
 from app.schema.deserializer import make_deserializer
 
 _tasks: dict[str, dict] = {}
