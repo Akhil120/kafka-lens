@@ -86,13 +86,40 @@ def get_topic_info(cluster: ClusterConfig, topic: str) -> TopicInfo:
 
 
 def test_connection(cluster: ClusterConfig) -> list[dict]:
-    admin = make_admin(cluster)
-    meta = admin.list_topics(timeout=15)
-    brokers = [
-        {"id": b.id, "host": b.host, "port": b.port}
-        for b in meta.brokers.values()
-    ]
-    return brokers
+    import socket as _socket
+
+    # TCP pre-check: separates "can't reach host" from "SSL/auth issue"
+    for entry in cluster.bootstrap_servers.split(","):
+        entry = entry.strip()
+        host, _, port_str = entry.rpartition(":")
+        host = host or entry
+        port = int(port_str) if port_str.isdigit() else 9092
+        try:
+            s = _socket.create_connection((host, port), timeout=5)
+            s.close()
+        except OSError as e:
+            raise RuntimeError(
+                f"Cannot reach {host}:{port} over TCP — check firewall or VPN. ({e})"
+            )
+
+    try:
+        admin = make_admin(cluster)
+        meta = admin.list_topics(timeout=15)
+        return [
+            {"id": b.id, "host": b.host, "port": b.port}
+            for b in meta.brokers.values()
+        ]
+    except Exception as exc:
+        msg = str(exc)
+        if "ssl" in msg.lower() or "transport" in msg.lower():
+            msg += (
+                "\n\nThis usually means a corporate SSL inspection proxy is "
+                "intercepting the connection and dropping non-HTTP traffic after "
+                "the TLS handshake. Ask IT to whitelist your Confluent Cloud "
+                "bootstrap server on port 9092 (bypass SSL inspection for "
+                "*.confluent.cloud)."
+            )
+        raise RuntimeError(msg) from exc
 
 
 def _resolve_offsets_from_timestamps(
