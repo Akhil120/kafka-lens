@@ -59,6 +59,7 @@ function kafkaApp(initialClusters) {
     expandedRow: null,
     expandedDetail: {},       // key: `${partition}-${offset}` -> full KafkaMessage
     expandedDetailLoading: false,
+    copied: null,             // ID string of the most-recently-copied button, cleared after 2s
     topicFilter: '',
     showTopicDropdown: false,
     showPartitionDetails: true,
@@ -266,12 +267,24 @@ function kafkaApp(initialClusters) {
       return `${msg.partition}-${msg.offset}`;
     },
 
+    selectedMsg() {
+      if (this.expandedRow === null) return null;
+      return this.pagedMessages()[this.expandedRow] || null;
+    },
+
+    selectedDetail() {
+      const msg = this.selectedMsg();
+      if (!msg) return null;
+      return this.getExpandedDetail(msg);
+    },
+
     async toggleRow(idx) {
       if (this.expandedRow === idx) {
         this.expandedRow = null;
         return;
       }
       this.expandedRow = idx;
+      this.copied = null;
       const msg = this.pagedMessages()[idx];
       if (!msg) return;
       const key = this.detailKey(msg);
@@ -300,7 +313,7 @@ function kafkaApp(initialClusters) {
       }
 
       this.$nextTick(() => {
-        document.querySelectorAll('.json-viewer code').forEach(el => hljs.highlightElement(el));
+        document.querySelectorAll('#detail-panel .json-viewer code').forEach(el => hljs.highlightElement(el));
       });
     },
 
@@ -329,20 +342,33 @@ function kafkaApp(initialClusters) {
       return detail.value_raw || '';
     },
 
-    copyToClipboard(text) {
-      navigator.clipboard.writeText(text).catch(() => {});
+    copyToClipboard(text, id = '_') {
+      if (!text) return;
+      navigator.clipboard.writeText(text).then(() => {
+        this.copied = id;
+        setTimeout(() => { if (this.copied === id) this.copied = null; }, 2000);
+      }).catch(() => {});
     },
 
     // ---- Export — server streams full re-fetched payloads ----
+    _triggerDownload(url, filename) {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    },
+
     exportJson() {
       if (this.taskId) {
-        window.open(`/api/search/${this.taskId}/export.json`);
+        this._triggerDownload(`/api/search/${this.taskId}/export.json`, 'messages.json');
       }
     },
 
     exportCsv() {
       if (this.taskId) {
-        window.open(`/api/search/${this.taskId}/export.csv`);
+        this._triggerDownload(`/api/search/${this.taskId}/export.csv`, 'messages.csv');
       }
     },
 
