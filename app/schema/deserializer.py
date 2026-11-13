@@ -1,15 +1,23 @@
 from __future__ import annotations
 import io
 import json
+import logging
 import struct
-from functools import lru_cache
 from typing import Any
 
 import fastavro
 
 from app.schema.registry import SchemaRegistryClient
 
+log = logging.getLogger(__name__)
+
 MAGIC_BYTE = 0x00
+
+# Module-level cache shared across all deserialization calls so we hit the
+# registry only once per schema_id regardless of how many partitions run in
+# parallel.
+_schema_cache: dict[tuple[str, int], Any] = {}   # (registry_url, schema_id) -> parsed schema
+_schema_type_cache: dict[tuple[str, int], str] = {}  # (registry_url, schema_id) -> "avro"|"json"|"protobuf"
 
 
 def _is_confluent_encoded(data: bytes) -> bool:
@@ -24,21 +32,26 @@ def _extract_schema_id(data: bytes) -> tuple[int, bytes]:
 class MessageDeserializer:
     def __init__(self, registry: SchemaRegistryClient | None = None):
         self._registry = registry
-        self._schema_cache: dict[int, Any] = {}
 
-    def _get_avro_schema(self, schema_id: int):
-        if schema_id not in self._schema_cache:
-            meta = self._registry.get_schema_by_id(schema_id)
-            parsed = fastavro.parse_schema(json.loads(meta["schema"]))
-            self._schema_cache[schema_id] = parsed
-        return self._schema_cache[schema_id]
+    def _registry_key(self, schema_id: int) -> tuple[str, int]:
+        return (self._registry.url if self._registry else "", schema_id)
 
-    def _get_proto_descriptor(self, schema_id: int):
-        from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
-        if schema_id not in self._schema_cache:
+    def _get_schema_type(self, schema_id: int) -> str:
+        """Return 'avro', 'json', or 'protobuf' based on the registry schemaType field."""
+        key = self._registry_key(schema_id)
+        if key not in _schema_type_cache:
             meta = self._registry.get_schema_by_id(schema_id)
-            self._schema_cache[schema_id] = meta["schema"]
-        return self._schema_cache[schema_id]
+            raw_type = meta.get("schemaType", "AVRO").upper()
+            _schema_type_cache[key] = {"AVRO": "avro", "JSON": "json", "PROTOBUF": "protobuf"}.get(raw_type, "avro")
+        return _schema_type_cache[key]
+
+    def _get_avro_schema(self, schema_id: int) -> Any:
+        key = self._registry_key(schema_id)
+        if key not in _schema_cache:
+            meta = self._registry.get_schema_by_id(schema_id)
+            raw = json.loads(meta["schema"])
+            _schema_cache[key] = fastavro.parse_schema(raw)
+        return _schema_cache[key]
 
     def deserialize(
         self,
@@ -52,8 +65,15 @@ class MessageDeserializer:
         detected_fmt = fmt
         if fmt == "auto":
             if _is_confluent_encoded(value_bytes):
-                # peek at registry to determine type — default to avro
-                detected_fmt = "avro"
+                if self._registry:
+                    try:
+                        schema_id, _ = _extract_schema_id(value_bytes)
+                        detected_fmt = self._get_schema_type(schema_id)
+                    except Exception as e:
+                        log.warning("deserializer: could not determine schema type from registry: %s", e)
+                        detected_fmt = "avro"
+                else:
+                    detected_fmt = "avro"
             else:
                 detected_fmt = _sniff_format(value_bytes)
 
@@ -68,45 +88,41 @@ class MessageDeserializer:
                 result = value_bytes.decode("utf-8", errors="replace")
             return result, detected_fmt
         except Exception as e:
-            if detected_fmt in ("avro", "protobuf", "json") and _is_confluent_encoded(value_bytes):
+            log.warning("deserializer: failed to decode %s message: %s", detected_fmt, e)
+            if _is_confluent_encoded(value_bytes):
                 schema_id, _ = _extract_schema_id(value_bytes)
-                return {
-                    "_error": str(e),
-                    "_hint": f"Could not decode {detected_fmt} message (schema_id={schema_id}). Check schema registry configuration.",
-                    "_raw_bytes": len(value_bytes),
-                }, "error"
+                hint = (
+                    f"Could not decode {detected_fmt} message (schema_id={schema_id})."
+                    if self._registry else
+                    f"Message has Confluent magic byte (schema_id={schema_id}) but no schema registry is configured."
+                )
+                return {"_error": str(e), "_hint": hint, "_raw_bytes": len(value_bytes)}, "error"
             return value_bytes.decode("utf-8", errors="replace"), "plain"
 
     def _decode_avro(self, data: bytes) -> Any:
+        if not self._registry and _is_confluent_encoded(data):
+            raise ValueError("Schema registry not configured — cannot decode Confluent-encoded Avro")
         if _is_confluent_encoded(data):
             schema_id, payload = _extract_schema_id(data)
             schema = self._get_avro_schema(schema_id)
-            reader = io.BytesIO(payload)
-            return fastavro.schemaless_reader(reader, schema)
-        # try raw avro with embedded schema
-        reader = io.BytesIO(data)
-        records = list(fastavro.reader(reader))
+            return fastavro.schemaless_reader(io.BytesIO(payload), schema)
+        # raw Avro container file with embedded schema
+        records = list(fastavro.reader(io.BytesIO(data)))
         return records[0] if len(records) == 1 else records
 
     def _decode_protobuf(self, data: bytes) -> Any:
         if _is_confluent_encoded(data):
             schema_id, payload = _extract_schema_id(data)
-            # skip message index bytes (Confluent protobuf framing)
-            # first byte(s) are zigzag-encoded message indexes
+            # skip Confluent message-index varint prefix
             idx = 0
             while idx < len(payload) and payload[idx] & 0x80:
                 idx += 1
-            idx += 1
-            payload = payload[idx:]
-            # generic decode as unknown fields — return hex if no descriptor
+            payload = payload[idx + 1:]
             return {"_raw_hex": payload.hex(), "_note": "protobuf (install descriptor for full decode)"}
         return {"_raw_hex": data.hex()}
 
     def _decode_json(self, data: bytes) -> Any:
-        if _is_confluent_encoded(data):
-            _, payload = _extract_schema_id(data)
-        else:
-            payload = data
+        payload = data[5:] if _is_confluent_encoded(data) else data
         return json.loads(payload.decode("utf-8"))
 
 
