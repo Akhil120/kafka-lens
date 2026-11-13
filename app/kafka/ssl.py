@@ -55,12 +55,14 @@ def _macos_ca_bundle() -> str | None:
     return _write_pem("\n".join(blocks)) if blocks else None
 
 def _windows_ca_bundle() -> str | None:
-    # Java Kafka clients work on Windows without special cert configuration —
-    # librdkafka should too. Setting ssl.ca.location overrides librdkafka's
-    # native SSL lookup and causes "ssl transport error: unknown error".
-    # Return None so ssl.ca.location is left unset and librdkafka resolves
-    # CAs the same way the JVM does.
-    return None
+    # librdkafka on Windows uses OpenSSL, which does NOT automatically read the
+    # Windows cert store. certifi ships Mozilla's root CA bundle and covers all
+    # standard public CAs including those used by Confluent Cloud.
+    try:
+        import certifi
+        return certifi.where()
+    except ImportError:
+        return None
 
 
 def _linux_ca_bundle() -> str | None:

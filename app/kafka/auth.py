@@ -1,5 +1,26 @@
 from __future__ import annotations
+import collections
+import logging
 from app.models import ClusterConfig
+
+# Buffer the last 100 librdkafka log lines so test_connection can include them
+# in error messages when SSL/broker failures occur.
+_rdkafka_log_buffer: collections.deque[str] = collections.deque(maxlen=100)
+
+
+class _BufHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        _rdkafka_log_buffer.append(self.format(record))
+
+
+_rdkafka_logger = logging.getLogger("librdkafka")
+_rdkafka_logger.setLevel(logging.DEBUG)
+_rdkafka_logger.addHandler(_BufHandler(logging.DEBUG))
+_rdkafka_logger.propagate = False
+
+
+def get_rdkafka_logs() -> list[str]:
+    return list(_rdkafka_log_buffer)
 
 
 def build_kafka_config(cluster: ClusterConfig, extra: dict | None = None) -> dict:
@@ -7,6 +28,7 @@ def build_kafka_config(cluster: ClusterConfig, extra: dict | None = None) -> dic
         "bootstrap.servers": cluster.bootstrap_servers,
         "socket.timeout.ms": 30000,
         "broker.address.family": "v4",
+        "logger": _rdkafka_logger,
     }
 
     proto = cluster.security_protocol
@@ -17,6 +39,7 @@ def build_kafka_config(cluster: ClusterConfig, extra: dict | None = None) -> dic
     if proto in ("SSL", "SASL_SSL"):
         from app.kafka.ssl import get_system_ca_bundle
         ssl = cluster.ssl
+        cfg["debug"] = "security,broker"
 
         # CA cert: explicit override wins; otherwise inject system bundle
         # so org proxy CAs (pushed via GPO/MDM) are trusted by librdkafka.

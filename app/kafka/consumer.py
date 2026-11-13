@@ -110,15 +110,11 @@ def test_connection(cluster: ClusterConfig) -> list[dict]:
             for b in meta.brokers.values()
         ]
     except Exception as exc:
+        from app.kafka.auth import get_rdkafka_logs
         msg = str(exc)
-        if "ssl" in msg.lower() or "transport" in msg.lower():
-            msg += (
-                "\n\nThis usually means a corporate SSL inspection proxy is "
-                "intercepting the connection and dropping non-HTTP traffic after "
-                "the TLS handshake. Ask IT to whitelist your Confluent Cloud "
-                "bootstrap server on port 9092 (bypass SSL inspection for "
-                "*.confluent.cloud)."
-            )
+        logs = get_rdkafka_logs()
+        if logs:
+            msg += "\n\n--- librdkafka debug log ---\n" + "\n".join(logs[-40:])
         raise RuntimeError(msg) from exc
 
 
