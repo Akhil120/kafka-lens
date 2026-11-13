@@ -3,6 +3,7 @@ import asyncio
 import json
 import re
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -144,7 +145,7 @@ def _search_partition(
     matched: list[KafkaMessage] = []
     for batch in fetch_partition(
         cluster, topic, pid, start_offset, end_offset, max_messages,
-        lambda: cancel_event.is_set(), batch_size=50,
+        lambda: cancel_event.is_set(), batch_size=100,
     ):
         if cancel_event.is_set():
             break
@@ -156,11 +157,14 @@ def _search_partition(
             if _needle is not None:
                 vb = raw["value_bytes"] or b""
                 if vb and vb[0] != 0x00 and _needle not in vb:
+                    raw["value_bytes"] = None  # release bytes for cache miss
                     continue
 
             val, fmt = deserializer.deserialize(
                 raw["value_bytes"], raw["key_bytes"], request.format
             )
+            raw["value_bytes"] = None  # release raw bytes immediately after deserialization
+
             key = raw["key_bytes"].decode("utf-8", errors="replace") if raw["key_bytes"] else None
 
             if isinstance(val, (dict, list)):
@@ -170,6 +174,7 @@ def _search_partition(
 
             # Filter with full data so matches in large values aren't missed.
             if not _matches_filters(key, value_raw, val, request):
+                del val  # release deserialized object for non-matches
                 continue
 
             # Truncate before storing so large nested values don't exhaust memory.
@@ -182,6 +187,7 @@ def _search_partition(
                     value_stored: Any = orjson.loads(value_raw)
                 except Exception:
                     value_stored = value_raw
+                del val  # original large object no longer needed
             else:
                 value_stored = val if isinstance(val, (dict, list)) else value_raw
 
@@ -314,6 +320,10 @@ def _run_search(task_id: str) -> None:
                     partition_results = future.result()
                     all_matched.extend(partition_results)
                     all_matched.sort(key=lambda m: (m.timestamp, m.partition, m.offset))
+                    # Global cap: once we have enough results, cancel all remaining partitions.
+                    if len(all_matched) > request.max_messages:
+                        all_matched = all_matched[:request.max_messages]
+                        cancel_event.set()
                     with task["lock"]:
                         task["results"] = list(all_matched)
                         task["matched"] = len(all_matched)
@@ -401,35 +411,50 @@ async def stream_results(task_id: str) -> AsyncGenerator[str, None]:
         yield f"event: error\ndata: {json.dumps({'error': 'Task not found'})}\n\n"
         return
 
-    last_matched = -1
     last_scanned = -1
+    last_matched = -1
+    last_results_count = 0   # matched count at time of last results event
+    last_results_t = 0.0     # monotonic time of last results event
 
     while True:
+        now = time.monotonic()
+        need_results = (last_matched > last_results_count and now - last_results_t >= 1.0)
+
         with task["lock"]:
             scanned = task["scanned"]
             matched = task["matched"]
             done = task["done"]
             error = task["error"]
-            results = list(task["results"])
+            # Only snapshot the results list when we'll actually use it
+            if need_results or done:
+                results = list(task["results"])
+            else:
+                results = None
 
         if scanned != last_scanned or matched != last_matched:
-            progress = {"scanned": scanned, "matched": matched}
-            yield f"event: progress\ndata: {orjson.dumps(progress).decode()}\n\n"
+            yield f"event: progress\ndata: {orjson.dumps({'scanned': scanned, 'matched': matched}).decode()}\n\n"
             last_scanned = scanned
-
-        if matched != last_matched and matched > 0:
-            msgs_data = [m.model_dump() for m in results]
-            yield f"event: results\ndata: {orjson.dumps(msgs_data, option=orjson.OPT_NON_STR_KEYS).decode()}\n\n"
             last_matched = matched
+
+        # Throttled intermediate preview: at most once per second, capped at 1000 messages.
+        # Uses last_matched (updated above) so preview reflects the latest count.
+        now = time.monotonic()
+        if results is not None and matched > last_results_count and now - last_results_t >= 1.0:
+            msgs_data = [m.model_dump() for m in results[:1000]]
+            yield f"event: results\ndata: {orjson.dumps(msgs_data, option=orjson.OPT_NON_STR_KEYS).decode()}\n\n"
+            last_results_count = matched
+            last_results_t = now
 
         if error:
             yield f"event: error\ndata: {orjson.dumps({'error': error}).decode()}\n\n"
             break
 
         if done:
+            if results is None:
+                with task["lock"]:
+                    results = list(task["results"])
             final = [m.model_dump() for m in results]
             yield f"event: done\ndata: {orjson.dumps({'scanned': scanned, 'matched': matched, 'messages': final}, option=orjson.OPT_NON_STR_KEYS).decode()}\n\n"
             break
 
-        changed = scanned != last_scanned or matched != last_matched
-        await asyncio.sleep(0.05 if not changed else 0.0)
+        await asyncio.sleep(0.05)
