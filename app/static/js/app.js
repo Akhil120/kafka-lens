@@ -55,7 +55,7 @@ function kafkaApp(initialClusters) {
     async toggleCluster(cluster) {
       const id = cluster.id;
       if (!this.activeClusters[id]) {
-        this.activeClusters[id] = { expanded: false, topics: [], loading: false };
+        this.activeClusters[id] = { expanded: false, topics: [], loading: false, error: null };
       }
       const state = this.activeClusters[id];
       state.expanded = !state.expanded;

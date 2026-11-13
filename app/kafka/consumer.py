@@ -34,7 +34,7 @@ def invalidate_admin(cluster_id: str) -> None:
 
 def list_topics(cluster: ClusterConfig) -> list[dict]:
     admin = make_admin(cluster)
-    meta = admin.list_topics(timeout=10)
+    meta = admin.list_topics(timeout=15)
     topics = []
     for name, topic_meta in sorted(meta.topics.items()):
         if name.startswith("_"):
