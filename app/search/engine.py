@@ -389,8 +389,7 @@ def _fetch_all_to_duckdb(
     con = duckdb.connect(":memory:")
     con.execute(_CREATE_MSG_TABLE)
     insert_lock = threading.Lock()
-    byte_total = [0]   # cumulative value_raw bytes; guarded by byte_lock
-    byte_lock = threading.Lock()
+    byte_total = [0]   # cumulative value_raw bytes; guarded by insert_lock (reused)
     too_large_event = threading.Event()
 
     def _fetch_one_partition(pid: int, start: int, end: int) -> None:
@@ -407,6 +406,8 @@ def _fetch_all_to_duckdb(
         ):
             if cancel_event.is_set() or too_large_event.is_set():
                 break
+
+            batch_bytes = 0
             for raw in batch:
                 val, fmt = deserializer.deserialize(raw["value_bytes"], raw["key_bytes"], request.format)
                 raw["value_bytes"] = None
@@ -418,14 +419,7 @@ def _fetch_all_to_duckdb(
                     value_raw = str(val) if val is not None else ""
                     value_json = None
 
-                with byte_lock:
-                    byte_total[0] += len(value_raw)
-                    if byte_total[0] > _CACHE_MAX_SCAN_BYTES:
-                        too_large_event.set()
-
-                if too_large_event.is_set():
-                    break
-
+                batch_bytes += len(value_raw)
                 rows.append((
                     raw["partition"], raw["offset"], raw["timestamp"],
                     key, value_raw, value_json,
@@ -435,19 +429,19 @@ def _fetch_all_to_duckdb(
             with task["lock"]:
                 task["scanned"] += len(batch)
 
-            # Chunked insert: flush accumulated rows to DuckDB before they pile up.
-            if len(rows) >= _CACHE_INSERT_CHUNK and not too_large_event.is_set():
+            # Update shared byte counter and flush rows once per batch — not per message.
+            if rows:
                 with insert_lock:
-                    con.executemany("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?)", rows)
-                rows.clear()
+                    byte_total[0] += batch_bytes
+                    over = byte_total[0] > _CACHE_MAX_SCAN_BYTES
+                    if not over:
+                        con.executemany("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?)", rows)
+                if over:
+                    too_large_event.set()
+                rows = []
 
             if cancel_event.is_set() or too_large_event.is_set():
                 break
-
-        # Flush any remaining rows (skip if we're aborting).
-        if rows and not too_large_event.is_set() and not cancel_event.is_set():
-            with insert_lock:
-                con.executemany("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?)", rows)
 
     n = len(partition_ranges)
     with ThreadPoolExecutor(max_workers=min(n, MAX_PARTITION_THREADS)) as pool:
