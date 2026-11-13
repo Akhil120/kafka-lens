@@ -107,7 +107,7 @@ class SearchRequest(BaseModel):
     format: Literal["auto", "json", "avro", "protobuf", "plain"] = "auto"
     schema_registry_url: str | None = None
 
-    max_messages: int = Field(default=1000, ge=1, le=10000)
+    max_messages: int = Field(default=1000, ge=1)
 
 
 class MessageSummary(BaseModel):
