@@ -43,39 +43,39 @@ def _safe_cfg(cfg: dict) -> dict:
 
 
 def list_topics(cluster: ClusterConfig) -> list[dict]:
-    from confluent_kafka import KafkaError  # for topic_meta.error.code() comparison
+    from confluent_kafka import KafkaError
 
-    log.info("list_topics: building config for %r (%s)", cluster.name, cluster.bootstrap_servers)
-    cfg = build_kafka_config(cluster)
-    log.info("list_topics: effective kafka config: %s", _safe_cfg(cfg))
+    cfg = build_kafka_config(cluster, {
+        "group.id": "__kafka_lens_meta__",
+        "enable.auto.commit": "false",
+    })
+    log.info("list_topics: effective config for %r: %s", cluster.name, _safe_cfg(cfg))
 
-    log.info("list_topics: creating AdminClient for %r", cluster.name)
+    # Use Consumer (not AdminClient) so logger= kwarg works and all librdkafka
+    # errors (auth failures, metadata errors) route through Python logging.
+    consumer = Consumer(cfg, logger=_rdkafka_logger)
     try:
-        admin = AdminClient(cfg)
+        log.info("list_topics: fetching metadata for %r", cluster.name)
+        meta = consumer.list_topics(timeout=15)
     except Exception as exc:
-        log.error("list_topics: AdminClient() raised for %r: %s", cluster.name, exc, exc_info=True)
+        log.error("list_topics: list_topics() raised for %r: %s", cluster.name, exc, exc_info=True)
         raise
-
-    log.info("list_topics: calling admin.list_topics(timeout=15) for %r", cluster.name)
-    try:
-        meta = admin.list_topics(timeout=15)
-    except Exception as exc:
-        log.error("list_topics: admin.list_topics() raised for %r: %s", cluster.name, exc, exc_info=True)
-        raise
+    finally:
+        consumer.close()
 
     broker_ids = list(meta.brokers.keys())
-    log.info("list_topics: metadata served by broker %s; brokers in cluster: %s",
+    log.info("list_topics: metadata from broker %s; cluster brokers: %s",
              meta.orig_broker_name, broker_ids)
 
     raw_names = list(meta.topics.keys())
-    log.info("list_topics: Kafka returned %d raw topic entries for %r (first 20: %s)",
+    log.info("list_topics: %d raw entries for %r (first 20: %s)",
              len(raw_names), cluster.name, raw_names[:20])
 
     topics = []
     skipped_internal = 0
     for name, topic_meta in sorted(meta.topics.items()):
         if topic_meta.error and topic_meta.error.code() != KafkaError.NO_ERROR:
-            log.warning("list_topics: topic %r metadata error: %s", name, topic_meta.error)
+            log.warning("list_topics: topic %r error: %s", name, topic_meta.error)
         if name.startswith("_"):
             skipped_internal += 1
             continue
@@ -84,8 +84,8 @@ def list_topics(cluster: ClusterConfig) -> list[dict]:
             "partitions": len(topic_meta.partitions),
         })
 
-    log.info("list_topics: returning %d user topics for %r (%d internal skipped)",
-             len(topics), cluster.name, skipped_internal)
+    log.info("list_topics: returning %d user topics (%d internal skipped)",
+             len(topics), skipped_internal)
     return topics
 
 
