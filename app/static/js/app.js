@@ -13,6 +13,12 @@ function kafkaApp(initialClusters) {
     sidebarWidth: parseInt(localStorage.getItem('kl-sidebar-w') || '260'),
     isResizing: false,
 
+    // Autocomplete history for key / value filter fields
+    _keyHistory: JSON.parse(localStorage.getItem('kl-key-history') || '[]'),
+    _valHistory: JSON.parse(localStorage.getItem('kl-val-history') || '[]'),
+    showKeyDropdown: false,
+    showValueDropdown: false,
+
     // Search state
     search: {
       from_timestamp: '',
@@ -54,6 +60,7 @@ function kafkaApp(initialClusters) {
     expandedDetail: {},       // key: `${partition}-${offset}` -> full KafkaMessage
     expandedDetailLoading: false,
     topicFilter: '',
+    showTopicDropdown: false,
     showPartitionDetails: true,
 
     async init() {
@@ -149,6 +156,8 @@ function kafkaApp(initialClusters) {
         this.searchElapsed = s + 's';
       }, 100);
 
+      this._saveHistory('key', this.search.key_filter);
+      this._saveHistory('val', this.search.value_filter);
       const body = this._buildSearchBody();
       let taskId;
       try {
@@ -532,6 +541,46 @@ function kafkaApp(initialClusters) {
 
     filterToPartition(pid) {
       this.search.partitions = String(pid);
+    },
+
+    // ---- Topic autocomplete ----
+    topicSuggestions() {
+      const q = (this.topicFilter || '').toLowerCase();
+      if (!q) return [];
+      const results = [];
+      for (const cluster of this.clusters) {
+        const state = this.activeClusters[cluster.id];
+        if (!state || !state.topics) continue;
+        for (const topic of state.topics) {
+          if (topic.name.toLowerCase().includes(q)) {
+            results.push({ cluster, topic });
+            if (results.length >= 20) return results;
+          }
+        }
+      }
+      return results;
+    },
+
+    // ---- Autocomplete history ----
+    _saveHistory(field, value) {
+      if (!value || !value.trim()) return;
+      const key = field === 'key' ? 'kl-key-history' : 'kl-val-history';
+      const prop = field === 'key' ? '_keyHistory' : '_valHistory';
+      let hist = this[prop].filter(v => v !== value);
+      hist.unshift(value);
+      hist = hist.slice(0, 15);
+      this[prop] = hist;
+      localStorage.setItem(key, JSON.stringify(hist));
+    },
+
+    keySuggestions() {
+      const q = (this.search.key_filter || '').toLowerCase();
+      return this._keyHistory.filter(v => !q || v.toLowerCase().includes(q));
+    },
+
+    valueSuggestions() {
+      const q = (this.search.value_filter || '').toLowerCase();
+      return this._valHistory.filter(v => !q || v.toLowerCase().includes(q));
     },
 
     // ---- Search hints ----
