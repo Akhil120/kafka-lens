@@ -20,6 +20,7 @@ _tasks: dict[str, dict] = {}
 
 MAX_PARTITION_THREADS = 8
 _PREVIEW_BYTES = 300  # chars stored per matched message for the results table
+_EXPORT_CONCURRENCY = 16  # parallel fetch_one_message calls during export
 
 
 def create_task(cluster: ClusterConfig, topic: str, request: SearchRequest) -> str:
@@ -511,47 +512,45 @@ async def iter_export(task_id: str, fmt: str) -> AsyncGenerator[bytes, None]:
     )
 
     loop = asyncio.get_event_loop()
+    sem = asyncio.Semaphore(_EXPORT_CONCURRENCY)
 
-    if fmt == "csv":
-        yield b"partition,offset,timestamp_human,key,value_raw\r\n"
-
-    first = True
-    if fmt == "json":
-        yield b"["
-
-    for s in summaries:
-        raw = await loop.run_in_executor(
-            None, fetch_one_message, cluster, topic, s["partition"], s["offset"]
-        )
+    async def fetch_full(s: dict) -> dict | None:
+        async with sem:
+            raw = await loop.run_in_executor(
+                None, fetch_one_message, cluster, topic, s["partition"], s["offset"]
+            )
         if raw is None:
-            continue
-
+            return None
         val, msg_fmt = deserializer.deserialize(raw["value_bytes"], raw["key_bytes"], request.format)
         if isinstance(val, (dict, list)):
             value_raw = orjson.dumps(val).decode("utf-8", errors="replace")
         else:
             value_raw = str(val) if val is not None else ""
-
         key = deserializer.deserialize_key(raw["key_bytes"])
+        return {
+            "partition": raw["partition"],
+            "offset": raw["offset"],
+            "timestamp_human": _ts_to_human(raw["timestamp"]),
+            "key": key,
+            "value_raw": value_raw,
+            "headers": raw["headers"],
+            "format": msg_fmt,
+        }
 
-        if fmt == "json":
-            msg_dict = {
-                "partition": raw["partition"],
-                "offset": raw["offset"],
-                "timestamp_human": _ts_to_human(raw["timestamp"]),
-                "key": key,
-                "value_raw": value_raw,
-                "headers": raw["headers"],
-                "format": msg_fmt,
-            }
+    messages = await asyncio.gather(*[fetch_full(s) for s in summaries])
+    messages = [m for m in messages if m is not None]
+
+    if fmt == "csv":
+        yield b"partition,offset,timestamp_human,key,value_raw\r\n"
+        for m in messages:
+            row = ",".join(json.dumps(x) for x in [m["partition"], m["offset"], m["timestamp_human"], m["key"] or "", m["value_raw"]])
+            yield (row + "\r\n").encode()
+    else:
+        yield b"["
+        first = True
+        for m in messages:
             if not first:
                 yield b","
-            yield orjson.dumps(msg_dict)
+            yield orjson.dumps(m)
             first = False
-        else:
-            ts_human = _ts_to_human(raw["timestamp"])
-            row = ",".join(json.dumps(x) for x in [raw["partition"], raw["offset"], ts_human, key or "", value_raw])
-            yield (row + "\r\n").encode()
-
-    if fmt == "json":
         yield b"]"
