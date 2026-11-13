@@ -171,18 +171,22 @@ def _probe_tls(host: str, port: int, skip_verify: bool = False) -> dict:
         result.update({"tls_ok": False, "tls_error": f"SSL error: {e.reason or e}"})
     except OSError as e:
         errno_hint = ""
-        if hasattr(e, "winerror") and e.winerror == 10054:
+        is_tcp_rst = hasattr(e, "winerror") and e.winerror == 10054
+        if is_tcp_rst:
             errno_hint = " — TCP RST from server. Broker address likely resolves to a public IP instead of the PrivateLink endpoint. Add a wildcard DNS entry (*.{}) pointing to the PrivateLink IP.".format(".".join(host.split(".")[1:]))
-        result.update({"tls_ok": False, "tls_error": f"Network error: {e}{errno_hint}"})
+        result.update({"tls_ok": False, "tls_error": f"Network error: {e}{errno_hint}", "tcp_rst": is_tcp_rst})
     return result
 
 
-def test_connection(cluster: ClusterConfig) -> list[dict]:
+def test_connection(cluster: ClusterConfig) -> tuple[list[dict], list[str] | None]:
     import socket as _socket
 
     proto = cluster.security_protocol
 
-    # TCP pre-check: separates "can't reach host" from "SSL/auth issue"
+    # TCP pre-check: separates "can't reach host" from "SSL/auth issue".
+    # Also resolve bootstrap hostnames to their IPs (PrivateLink IPs) so we can
+    # generate hosts file entries for brokers that resolve to public IPs.
+    bootstrap_ips: list[str] = []
     for entry in cluster.bootstrap_servers.split(","):
         entry = entry.strip()
         host, _, port_str = entry.rpartition(":")
@@ -195,6 +199,11 @@ def test_connection(cluster: ClusterConfig) -> list[dict]:
             raise RuntimeError(
                 f"Cannot reach {host}:{port} over TCP — check firewall or VPN. ({e})"
             )
+        try:
+            ips = list({addr[4][0] for addr in _socket.getaddrinfo(host, port)})
+            bootstrap_ips.extend(ips)
+        except OSError:
+            pass
 
     try:
         admin = make_admin(cluster)
@@ -206,18 +215,30 @@ def test_connection(cluster: ClusterConfig) -> list[dict]:
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
 
+    hosts_entries: list[str] | None = None
+
     # For SSL clusters, probe TLS to each broker independently using Python ssl
     # so we get specific error messages rather than librdkafka's opaque ones.
     if proto in ("SSL", "SASL_SSL"):
+        rst_broker_hosts: list[str] = []
         for broker in brokers:
             tls = _probe_tls(broker["host"], broker["port"], skip_verify=cluster.tls_skip_verify)
             broker["tls"] = tls
             if not tls["tls_ok"]:
                 log.warning("TLS probe failed for %s:%s — %s", broker["host"], broker["port"], tls["tls_error"])
+                if tls.get("tcp_rst"):
+                    rst_broker_hosts.append(broker["host"])
             else:
                 log.info("TLS probe OK for %s:%s — %s / %s", broker["host"], broker["port"], tls["protocol"], tls["cipher"])
 
-    return brokers
+        # If per-broker addresses get TCP RST (resolve to public IP) but bootstrap
+        # worked (resolves to PrivateLink IP), generate /etc/hosts entries so users
+        # can add them locally as a workaround until DNS is fixed by IT.
+        if rst_broker_hosts and bootstrap_ips:
+            privatelink_ip = bootstrap_ips[0]
+            hosts_entries = [f"{privatelink_ip}  {h}" for h in sorted(rst_broker_hosts)]
+
+    return brokers, hosts_entries
 
 
 def _resolve_offsets_from_timestamps(

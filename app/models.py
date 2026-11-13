@@ -75,6 +75,7 @@ class TestConnectionResponse(BaseModel):
     ok: bool
     brokers: list[dict[str, Any]] = []
     error: str | None = None
+    hosts_entries: list[str] | None = None
 
 
 class TopicInfo(BaseModel):

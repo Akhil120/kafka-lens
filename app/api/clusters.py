@@ -90,7 +90,7 @@ def test_cluster(cluster_id: str):
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
     try:
-        brokers = test_connection(cluster)
-        return TestConnectionResponse(ok=True, brokers=brokers)
+        brokers, hosts_entries = test_connection(cluster)
+        return TestConnectionResponse(ok=True, brokers=brokers, hosts_entries=hosts_entries)
     except Exception as e:
         return TestConnectionResponse(ok=False, error=str(e))
