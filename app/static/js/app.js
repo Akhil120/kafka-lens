@@ -313,6 +313,7 @@ function kafkaApp(initialClusters) {
         ssl_cert_location: '',
         ssl_key_location: '',
         ssl_key_password: '',
+        tls_skip_verify: cluster.tls_skip_verify || false,
       };
       this.editingCluster = cluster;
       this.formError = null;
@@ -348,6 +349,7 @@ function kafkaApp(initialClusters) {
           key_password: f.ssl_key_password || null,
         };
       }
+      payload.tls_skip_verify = f.tls_skip_verify || false;
 
       try {
         let resp;
@@ -464,5 +466,6 @@ function defaultClusterForm() {
     ssl_cert_location: '',
     ssl_key_location: '',
     ssl_key_password: '',
+    tls_skip_verify: false,
   };
 }

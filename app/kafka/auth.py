@@ -68,9 +68,11 @@ def build_kafka_config(cluster: ClusterConfig, extra: dict | None = None) -> dic
                 cfg["ssl.key.location"] = ssl.key_location
             if ssl.key_password:
                 cfg["ssl.key.password"] = ssl.key_password
-            cfg["ssl.endpoint.identification.algorithm"] = (
-                ssl.endpoint_identification_algorithm
-            )
+
+        # Disable TLS hostname verification — needed for private routing setups
+        # where metadata-returned broker hostnames differ from the cert SAN.
+        if cluster.tls_skip_verify:
+            cfg["ssl.endpoint.identification.algorithm"] = "none"
 
     if proto in ("SASL_PLAINTEXT", "SASL_SSL"):
         if mech == "AWS_MSK_IAM":

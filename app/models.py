@@ -37,6 +37,7 @@ class ClusterConfig(BaseModel):
     password: str | None = None  # encrypted at rest
 
     ssl: SslConfig | None = None
+    tls_skip_verify: bool = False  # sets ssl.endpoint.identification.algorithm=none
     oauth: OauthConfig | None = None  # password/client_secret encrypted at rest
 
     schema_registry_url: str | None = None
