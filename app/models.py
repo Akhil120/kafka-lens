@@ -107,7 +107,7 @@ class SearchRequest(BaseModel):
     format: Literal["auto", "json", "avro", "protobuf", "plain"] = "auto"
     schema_registry_url: str | None = None
 
-    max_messages: int = Field(default=1000, ge=1)
+    max_messages: int = Field(default=1000, ge=1, le=10000)
 
 
 class KafkaMessage(BaseModel):
@@ -120,6 +120,8 @@ class KafkaMessage(BaseModel):
     value_raw: str
     headers: dict[str, str]
     format: str
+    value_truncated: bool = False
+    original_size: int = 0
 
 
 class SearchTaskResponse(BaseModel):

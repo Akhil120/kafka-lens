@@ -18,6 +18,7 @@ from app.schema.deserializer import make_deserializer
 _tasks: dict[str, dict] = {}
 
 MAX_PARTITION_THREADS = 8
+_MAX_VALUE_BYTES = 100 * 1024  # 100 KB stored per message value
 
 
 def create_task(cluster: ClusterConfig, topic: str, request: SearchRequest) -> str:
@@ -143,7 +144,7 @@ def _search_partition(
     matched: list[KafkaMessage] = []
     for batch in fetch_partition(
         cluster, topic, pid, start_offset, end_offset, max_messages,
-        lambda: cancel_event.is_set(), batch_size=50000,
+        lambda: cancel_event.is_set(), batch_size=500,
     ):
         if cancel_event.is_set():
             break
@@ -167,8 +168,22 @@ def _search_partition(
             else:
                 value_raw = str(val) if val is not None else ""
 
+            # Filter with full data so matches in large values aren't missed.
             if not _matches_filters(key, value_raw, val, request):
                 continue
+
+            # Truncate before storing so large nested values don't exhaust memory.
+            original_size = len(value_raw)
+            value_truncated = original_size > _MAX_VALUE_BYTES
+            if value_truncated:
+                value_raw = value_raw[:_MAX_VALUE_BYTES]
+                # Re-parse so KafkaMessage.value is a smaller dict, not the full object.
+                try:
+                    value_stored: Any = orjson.loads(value_raw)
+                except Exception:
+                    value_stored = value_raw
+            else:
+                value_stored = val if isinstance(val, (dict, list)) else value_raw
 
             matched.append(KafkaMessage(
                 partition=raw["partition"],
@@ -176,10 +191,12 @@ def _search_partition(
                 timestamp=raw["timestamp"],
                 timestamp_human=_ts_to_human(raw["timestamp"]),
                 key=key,
-                value=val if isinstance(val, (dict, list)) else value_raw,
+                value=value_stored,
                 value_raw=value_raw,
                 headers=raw["headers"],
                 format=fmt,
+                value_truncated=value_truncated,
+                original_size=original_size,
             ))
 
         with task["lock"]:
@@ -309,7 +326,16 @@ def _run_search(task_id: str) -> None:
 
 def _row_to_message(row: tuple) -> KafkaMessage:
     partition, msg_offset, ts, key, value_json, value_raw, headers_str, fmt = row
-    parsed_val = json.loads(value_json) if value_json else value_raw
+    original_size = len(value_raw) if value_raw else 0
+    value_truncated = original_size > _MAX_VALUE_BYTES
+    if value_truncated:
+        value_raw = value_raw[:_MAX_VALUE_BYTES]
+        try:
+            parsed_val = orjson.loads(value_raw)
+        except Exception:
+            parsed_val = value_raw
+    else:
+        parsed_val = json.loads(value_json) if value_json else value_raw
     return KafkaMessage(
         partition=partition,
         offset=msg_offset,
@@ -320,6 +346,8 @@ def _row_to_message(row: tuple) -> KafkaMessage:
         value_raw=value_raw,
         headers=json.loads(headers_str) if headers_str else {},
         format=fmt,
+        value_truncated=value_truncated,
+        original_size=original_size,
     )
 
 
