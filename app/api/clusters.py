@@ -20,6 +20,7 @@ def list_clusters():
             schema_registry_url=c.schema_registry_url,
             schema_registry_username=c.schema_registry_username,
             tls_skip_verify=c.tls_skip_verify,
+            consumer_group_id=c.consumer_group_id,
         )
         for c in clusters
     ]
@@ -38,6 +39,7 @@ def create_cluster(cluster: ClusterConfig):
         schema_registry_url=cluster.schema_registry_url,
         schema_registry_username=cluster.schema_registry_username,
         tls_skip_verify=cluster.tls_skip_verify,
+        consumer_group_id=cluster.consumer_group_id,
     )
 
 
@@ -74,6 +76,7 @@ def update_cluster(cluster_id: str, data: dict = Body(...)):
         schema_registry_url=cluster.schema_registry_url,
         schema_registry_username=cluster.schema_registry_username,
         tls_skip_verify=cluster.tls_skip_verify,
+        consumer_group_id=cluster.consumer_group_id,
     )
 
 

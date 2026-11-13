@@ -44,6 +44,8 @@ class ClusterConfig(BaseModel):
     schema_registry_username: str | None = None
     schema_registry_password: str | None = None  # encrypted at rest
 
+    consumer_group_id: str = "test-group"
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     @model_validator(mode="after")
@@ -69,6 +71,7 @@ class ClusterSummary(BaseModel):
     schema_registry_url: str | None = None
     schema_registry_username: str | None = None
     tls_skip_verify: bool = False
+    consumer_group_id: str = "test-group"
 
 
 class TestConnectionResponse(BaseModel):

@@ -314,6 +314,7 @@ function kafkaApp(initialClusters) {
         ssl_key_location: '',
         ssl_key_password: '',
         tls_skip_verify: cluster.tls_skip_verify || false,
+        consumer_group_id: cluster.consumer_group_id || 'test-group',
       };
       this.editingCluster = cluster;
       this.formError = null;
@@ -350,6 +351,7 @@ function kafkaApp(initialClusters) {
         };
       }
       payload.tls_skip_verify = f.tls_skip_verify || false;
+      payload.consumer_group_id = f.consumer_group_id || 'test-group';
 
       try {
         let resp;
@@ -467,5 +469,6 @@ function defaultClusterForm() {
     ssl_key_location: '',
     ssl_key_password: '',
     tls_skip_verify: false,
+    consumer_group_id: 'test-group',
   };
 }
