@@ -144,7 +144,7 @@ def _search_partition(
     matched: list[KafkaMessage] = []
     for batch in fetch_partition(
         cluster, topic, pid, start_offset, end_offset, max_messages,
-        lambda: cancel_event.is_set(), batch_size=500,
+        lambda: cancel_event.is_set(), batch_size=50,
     ):
         if cancel_event.is_set():
             break
@@ -238,7 +238,7 @@ def _search_partition_sql(
 
         for batch in fetch_partition(
             cluster, topic, pid, start_offset, end_offset, max_messages,
-            lambda: cancel_event.is_set(), batch_size=50000,
+            lambda: cancel_event.is_set(), batch_size=500,
         ):
             if cancel_event.is_set():
                 break
@@ -256,6 +256,11 @@ def _search_partition_sql(
                 else:
                     value_raw = str(val) if val is not None else ""
                     value_json = None
+
+                # Truncate before inserting into DuckDB to bound in-memory table size.
+                if value_raw and len(value_raw) > _MAX_VALUE_BYTES:
+                    value_raw = value_raw[:_MAX_VALUE_BYTES]
+                    value_json = value_raw if value_json else None
 
                 rows.append((
                     raw["partition"], raw["offset"], raw["timestamp"],

@@ -495,8 +495,8 @@ def fetch_partition(
         "group.id": cluster.consumer_group_id,
         "enable.auto.commit": "false",
         "auto.offset.reset": "earliest",
-        "fetch.max.bytes": 52428800,
-        "max.partition.fetch.bytes": 10485760,
+        "fetch.max.bytes": 10485760,       # 10 MB total per fetch
+        "max.partition.fetch.bytes": 5242880,  # 5 MB per partition per fetch
     })
     consumer = Consumer(cfg, logger=_rdkafka_logger)
     try:
