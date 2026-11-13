@@ -137,17 +137,98 @@ Click **Test Connection** — you should see `Connected. Brokers: pkc-xxxxx...`.
 
 ## Search filters
 
-| Mode | Input example | How it works |
-|---|---|---|
-| **Full-text** | `checkout_complete` | `ILIKE '%...%'` on the raw string value |
-| **JSONPath** | `$.geo.country=DE` | `json_extract_string(value_json, '$.geo.country') = 'DE'` |
-| **SQL** | `json_extract_string(value_json,'$.geo.country')='DE' AND CAST(json_extract(value_json,'$.user.lifetime_value') AS DOUBLE) > 10000` | Passed directly as a DuckDB `WHERE` clause fragment; `value_json` and `key` are the available columns |
+### Full-text mode (default)
 
-**Key filter** supports `contains` / `prefix` / `exact` / `regex` match modes.
+Case-insensitive substring match across the entire raw message value.
+
+```
+checkout_complete
+error
+user-123
+```
+
+### JSONPath mode
+
+Match a specific field inside a JSON value. Syntax: `$.path.to.field = expected_value`
+
+```
+# Field equals a value
+$.status = pending
+$.geo.country = DE
+$.user.id = 42
+
+# Nested / array access
+$.items[0].sku = ABC-999
+$.metadata.source = mobile_app
+
+# Field existence check (omit = value)
+$.error
+$.user.premium
+```
+
+- The path uses dot notation; array indices are written as `[0]`, `[1]`, etc.
+- The comparison is always a **string equality** check — cast to the right type in SQL mode if you need numeric comparisons.
+- If the field is missing the message is excluded.
+
+### SQL mode
+
+The value filter is injected directly into a DuckDB `WHERE` clause. Available columns:
+
+| Column | Type | Description |
+|---|---|---|
+| `value_raw` | `VARCHAR` | Full message value as a string |
+| `value_json` | `JSON` | Parsed JSON (use `json_extract` / `json_extract_string`) |
+| `key` | `VARCHAR` | Deserialized message key |
+| `partition` | `INTEGER` | Kafka partition number |
+| `msg_offset` | `BIGINT` | Kafka offset |
+| `timestamp` | `BIGINT` | Message timestamp in milliseconds |
+
+**Examples:**
+
+```sql
+-- Simple string match
+value_raw LIKE '%payment_failed%'
+
+-- Extract a JSON field (returns string)
+json_extract_string(value_json, '$.status') = 'failed'
+
+-- Numeric comparison — cast first
+CAST(json_extract(value_json, '$.amount') AS DOUBLE) > 1000
+
+-- Multiple conditions
+json_extract_string(value_json, '$.country') = 'US'
+  AND CAST(json_extract(value_json, '$.retries') AS INTEGER) >= 3
+
+-- Key pattern
+key LIKE 'user-%'
+
+-- Timestamp range within the result set (ms since epoch)
+timestamp > 1700000000000
+
+-- Regex
+regexp_matches(value_raw, 'error|exception', 'i')
+```
+
+> **Note:** SQL mode loads all messages in the range into DuckDB before filtering, so it scans the full `max_messages` window. Use timestamp or offset range to narrow the scan first.
+
+---
+
+### Key filter
+
+Applies independently of the value filter. Supported match modes:
+
+| Mode | Behaviour |
+|---|---|
+| `contains` | Case-insensitive substring — `user` matches `user-123`, `new_user` |
+| `exact` | Full string must match — `user-123` only |
+| `prefix` | Key must start with the value — `order-` matches `order-456` |
+| `regex` | ECMAScript regular expression — `^user-\d+$` |
+
+---
 
 **Scope controls:** from/to timestamp, from/to offset, partition list (comma-separated IDs — or click **Filter** in the partition overview), format override, message limit.
 
-> **Tip:** Contextual hints appear below each search field explaining the expected syntax for the active mode.
+> **Tip:** Contextual hints appear below each search field explaining the expected syntax for the active mode. Recent searches are saved per field and shown as a dropdown when you click into the input.
 
 ---
 
