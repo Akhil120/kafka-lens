@@ -482,7 +482,7 @@ def resolve_partition_ranges(
 def fetch_one_message(cluster: ClusterConfig, topic: str, partition: int, offset: int) -> dict | None:
     """Seek to an exact partition+offset and return one raw message dict."""
     cfg = build_kafka_config(cluster, {
-        "group.id": cluster.consumer_group_id + "-lens-detail",
+        "group.id": cluster.consumer_group_id,
         "enable.auto.commit": "false",
         "auto.offset.reset": "earliest",
     })
