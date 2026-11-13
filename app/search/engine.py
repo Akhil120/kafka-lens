@@ -453,8 +453,18 @@ async def stream_results(task_id: str) -> AsyncGenerator[str, None]:
             if results is None:
                 with task["lock"]:
                     results = list(task["results"])
-            final = [m.model_dump() for m in results]
-            yield f"event: done\ndata: {orjson.dumps({'scanned': scanned, 'matched': matched, 'messages': final}, option=orjson.OPT_NON_STR_KEYS).decode()}\n\n"
+            # Cap browser payload to prevent Chrome OOM on large result sets.
+            # The UI shows a capped indicator and the full count is preserved in matched.
+            _BROWSER_CAP = 1000
+            shown = results[:_BROWSER_CAP]
+            final = [m.model_dump() for m in shown]
+            payload = {
+                "scanned": scanned,
+                "matched": matched,
+                "messages": final,
+                "results_capped": len(results) > _BROWSER_CAP,
+            }
+            yield f"event: done\ndata: {orjson.dumps(payload, option=orjson.OPT_NON_STR_KEYS).decode()}\n\n"
             break
 
         await asyncio.sleep(0.05)

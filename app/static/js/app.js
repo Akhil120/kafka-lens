@@ -27,6 +27,7 @@ function kafkaApp(initialClusters) {
     scanned: 0,
     matched: 0,
     messages: [],
+    resultsCapped: false,
     searchError: null,
     sseSource: null,
     searchStartTime: null,
@@ -122,6 +123,7 @@ function kafkaApp(initialClusters) {
       }
       this.searching = true;
       this.messages = [];
+      this.resultsCapped = false;
       this.scanned = 0;
       this.matched = 0;
       this.searchError = null;
@@ -176,6 +178,7 @@ function kafkaApp(initialClusters) {
         this.scanned = d.scanned;
         this.matched = d.matched;
         this.messages = d.messages || [];
+        this.resultsCapped = !!d.results_capped;
         this.page = 1;
         this.searching = false;
         clearInterval(this._elapsedTimer);

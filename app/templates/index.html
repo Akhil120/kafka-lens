@@ -324,11 +324,16 @@
             <template x-if="messages.length > 0">
               <div class="search-card rounded-xl shadow-sm overflow-hidden fade-in">
                 <div class="flex items-center justify-between px-5 py-3 border-b border-gray-100 dark:border-gray-800">
-                  <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
-                    Showing
-                    <span x-text="((page-1)*pageSize+1).toLocaleString()"></span>–<span x-text="Math.min(page*pageSize, messages.length).toLocaleString()"></span>
-                    of <span x-text="messages.length.toLocaleString()"></span>
-                  </span>
+                  <div class="flex items-center gap-3">
+                    <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Showing
+                      <span x-text="((page-1)*pageSize+1).toLocaleString()"></span>–<span x-text="Math.min(page*pageSize, messages.length).toLocaleString()"></span>
+                      of <span x-text="messages.length.toLocaleString()"></span>
+                      <template x-if="resultsCapped">
+                        <span class="text-gray-400 dark:text-gray-500"> (<span x-text="matched.toLocaleString()"></span> total — download for all)</span>
+                      </template>
+                    </span>
+                  </div>
                   <div class="flex items-center gap-2">
                     <button @click="exportJson()"
                       class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
