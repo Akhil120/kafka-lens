@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import threading
 import time
 import uuid
@@ -8,6 +9,8 @@ from confluent_kafka import Consumer, TopicPartition, OFFSET_BEGINNING, OFFSET_E
 from confluent_kafka.admin import AdminClient, NewTopic
 from app.models import ClusterConfig, TopicInfo
 from app.kafka.auth import build_kafka_config, _rdkafka_logger  # noqa: F401 – logger used as Consumer kwarg
+
+log = logging.getLogger(__name__)
 
 _admin_cache: dict[str, AdminClient] = {}
 _admin_lock = threading.Lock()
@@ -35,6 +38,8 @@ def invalidate_admin(cluster_id: str) -> None:
 def list_topics(cluster: ClusterConfig) -> list[dict]:
     admin = make_admin(cluster)
     meta = admin.list_topics(timeout=15)
+    raw = list(meta.topics.keys())
+    log.warning("list_topics raw from Kafka: %d total, names=%s", len(raw), raw[:20])
     topics = []
     for name, topic_meta in sorted(meta.topics.items()):
         if name.startswith("_"):
