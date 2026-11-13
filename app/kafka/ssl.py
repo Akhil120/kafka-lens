@@ -56,15 +56,34 @@ def _macos_ca_bundle() -> str | None:
 
 def _windows_ca_bundle() -> str | None:
     # librdkafka on Windows bundles its own OpenSSL which does NOT read the
-    # Windows Root Certificate Store automatically. Use certifi — the same
-    # CA bundle pip/requests use — which reliably includes all public CAs
-    # (DigiCert, Let's Encrypt, etc.) including those used by Confluent Cloud.
-    # For corporate proxy CAs not in certifi, users set ssl.ca.location manually.
+    # Windows Root Store automatically. Build a combined PEM from:
+    #   1. certifi — public CAs (DigiCert etc.) used by Confluent Cloud
+    #   2. Windows ROOT + CA stores — org/proxy CAs pushed via GPO/MDM
+    import ssl as _ssl
+
+    blocks: list[str] = []
+
     try:
         import certifi
-        return certifi.where()
-    except ImportError:
-        return None
+        with open(certifi.where(), "r") as f:
+            blocks.append(f.read())
+    except Exception:
+        pass
+
+    for store in ("ROOT", "CA"):
+        try:
+            for cert_data, encoding, trust in _ssl.enum_certificates(store):
+                if encoding == "x509_asn" and (
+                    trust is True or isinstance(trust, set)
+                ):
+                    try:
+                        blocks.append(_ssl.DER_cert_to_PEM_cert(cert_data))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    return _write_pem("\n".join(blocks)) if blocks else None
 
 
 def _linux_ca_bundle() -> str | None:

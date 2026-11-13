@@ -7,7 +7,7 @@ from pathlib import Path
 from app.api import clusters as clusters_router
 from app.api import topics as topics_router
 from app.api import search as search_router
-from app import store
+from app import store, __version__
 from app.models import ClusterSummary
 
 _HERE = Path(__file__).parent  # app/ directory
@@ -39,5 +39,5 @@ def index(request: Request):
     return templates.TemplateResponse(
         request,
         "index.html",
-        {"clusters": cluster_summaries},
+        {"clusters": cluster_summaries, "version": __version__},
     )
