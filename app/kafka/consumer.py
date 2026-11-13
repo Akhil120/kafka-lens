@@ -43,7 +43,7 @@ def _safe_cfg(cfg: dict) -> dict:
 
 
 def list_topics(cluster: ClusterConfig) -> list[dict]:
-    from confluent_kafka import KafkaError
+    from confluent_kafka import KafkaError  # for topic_meta.error.code() comparison
 
     log.info("list_topics: building config for %r (%s)", cluster.name, cluster.bootstrap_servers)
     cfg = build_kafka_config(cluster)
@@ -71,26 +71,11 @@ def list_topics(cluster: ClusterConfig) -> list[dict]:
     log.info("list_topics: Kafka returned %d raw topic entries for %r (first 20: %s)",
              len(raw_names), cluster.name, raw_names[:20])
 
-    if not raw_names:
-        log.warning(
-            "list_topics: Kafka returned 0 topics for %r — likely causes: "
-            "(1) API key lacks DESCRIBE ACL on topics, "
-            "(2) TLS hostname check is blocking broker metadata connections "
-            "(enable 'Skip TLS hostname verification' in cluster settings)",
-            cluster.name,
-        )
-        raise ValueError(
-            "Kafka returned 0 topics. Possible causes: "
-            "(1) API key lacks DESCRIBE ACL on Topic:*, "
-            "(2) TLS hostname mismatch on broker connections — enable "
-            "'Skip TLS hostname verification' in the cluster settings."
-        )
-
     topics = []
     skipped_internal = 0
     for name, topic_meta in sorted(meta.topics.items()):
         if topic_meta.error and topic_meta.error.code() != KafkaError.NO_ERROR:
-            log.warning("list_topics: topic %r has metadata error: %s", name, topic_meta.error)
+            log.warning("list_topics: topic %r metadata error: %s", name, topic_meta.error)
         if name.startswith("_"):
             skipped_internal += 1
             continue
