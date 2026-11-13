@@ -44,8 +44,10 @@ function kafkaApp(initialClusters) {
     testResult: null,
     testLoading: false,
 
-    // Message detail
+    // Message detail — fetched on-demand when user expands a row
     expandedRow: null,
+    expandedDetail: {},       // key: `${partition}-${offset}` -> full KafkaMessage
+    expandedDetailLoading: false,
     topicFilter: '',
 
     async init() {
@@ -101,6 +103,7 @@ function kafkaApp(initialClusters) {
       this.matched = 0;
       this.searchError = null;
       this.expandedRow = null;
+      this.expandedDetail = {};
       this.topicLoading = true;
 
       try {
@@ -128,6 +131,7 @@ function kafkaApp(initialClusters) {
       this.matched = 0;
       this.searchError = null;
       this.expandedRow = null;
+      this.expandedDetail = {};
       this.page = 1;
       this.searchStartTime = Date.now();
       this.searchElapsed = null;
@@ -237,59 +241,89 @@ function kafkaApp(initialClusters) {
       return Math.min(100, Math.round((this.scanned / this.topicInfo.total_messages) * 100));
     },
 
-    // ---- Message detail ----
-    toggleRow(idx) {
-      this.expandedRow = this.expandedRow === idx ? null : idx;
+    // ---- Message detail — fetch-on-expand ----
+    detailKey(msg) {
+      return `${msg.partition}-${msg.offset}`;
+    },
+
+    async toggleRow(idx) {
       if (this.expandedRow === idx) {
-        this.$nextTick(() => {
-          document.querySelectorAll('.json-viewer code').forEach(el => hljs.highlightElement(el));
-        });
+        this.expandedRow = null;
+        return;
       }
+      this.expandedRow = idx;
+      const msg = this.pagedMessages()[idx];
+      if (!msg) return;
+      const key = this.detailKey(msg);
+
+      if (!this.expandedDetail[key]) {
+        this.expandedDetailLoading = true;
+        try {
+          const params = new URLSearchParams({
+            partition: msg.partition,
+            offset: msg.offset,
+            format: this.search.format,
+          });
+          const url = `/api/clusters/${this.selectedCluster.id}/topics/${this.selectedTopic.name}/message?${params}`;
+          const resp = await fetch(url);
+          if (resp.ok) {
+            this.expandedDetail[key] = await resp.json();
+          } else {
+            const text = await resp.text().catch(() => resp.statusText);
+            this.expandedDetail[key] = { _error: text };
+          }
+        } catch (e) {
+          this.expandedDetail[key] = { _error: e.message };
+        } finally {
+          this.expandedDetailLoading = false;
+        }
+      }
+
+      this.$nextTick(() => {
+        document.querySelectorAll('.json-viewer code').forEach(el => hljs.highlightElement(el));
+      });
+    },
+
+    getExpandedDetail(msg) {
+      return this.expandedDetail[this.detailKey(msg)] || null;
     },
 
     valuePreview(msg) {
-      if (msg.format === 'error') {
-        const hint = msg.value?._hint || msg.value?._error || 'Decode error';
-        return `⚠ ${hint}`;
-      }
-      const v = msg.value_raw || '';
-      if (v && v.charCodeAt(0) === 0) return '[binary data — check schema registry]';
+      const v = msg.preview || '';
       return v.length > 80 ? v.slice(0, 80) + '…' : v;
     },
 
     formattedValue(msg) {
-      if (msg.format === 'error') {
-        return JSON.stringify(msg.value, null, 2);
+      const detail = this.getExpandedDetail(msg);
+      if (!detail) return '';
+      if (detail._error) return '⚠ ' + detail._error;
+      if (typeof detail.value === 'object' && detail.value !== null) {
+        return JSON.stringify(detail.value, null, 2);
       }
-      if (typeof msg.value === 'object' && msg.value !== null) {
-        return JSON.stringify(msg.value, null, 2);
-      }
-      return msg.value_raw || '';
+      return detail.value_raw || '';
+    },
+
+    copyableValue(msg) {
+      const detail = this.getExpandedDetail(msg);
+      if (!detail || detail._error) return '';
+      return detail.value_raw || '';
     },
 
     copyToClipboard(text) {
       navigator.clipboard.writeText(text).catch(() => {});
     },
 
-    // ---- Export ----
+    // ---- Export — server streams full re-fetched payloads ----
     exportJson() {
-      const blob = new Blob([JSON.stringify(this.messages, null, 2)], { type: 'application/json' });
-      this._download(blob, 'messages.json');
+      if (this.taskId) {
+        window.open(`/api/search/${this.taskId}/export.json`);
+      }
     },
 
     exportCsv() {
-      const cols = ['partition', 'offset', 'timestamp_human', 'key', 'value_raw'];
-      const rows = this.messages.map(m => cols.map(c => JSON.stringify(m[c] ?? '')).join(','));
-      const csv = [cols.join(','), ...rows].join('\n');
-      const blob = new Blob([csv], { type: 'text/csv' });
-      this._download(blob, 'messages.csv');
-    },
-
-    _download(blob, filename) {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = filename; a.click();
-      URL.revokeObjectURL(url);
+      if (this.taskId) {
+        window.open(`/api/search/${this.taskId}/export.csv`);
+      }
     },
 
     // ---- Cluster modal ----

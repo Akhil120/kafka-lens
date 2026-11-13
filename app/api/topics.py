@@ -1,9 +1,11 @@
+import asyncio
 import logging
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from app import store
 from app.kafka.consumer import list_topics, get_topic_info
 from app.models import TopicInfo
 from app.schema.registry import SchemaRegistryClient
+from app.search.engine import fetch_message_detail
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/clusters", tags=["topics"])
@@ -46,6 +48,33 @@ def get_topic_detail(cluster_id: str, topic: str):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{cluster_id}/topics/{topic}/message")
+async def get_message_detail(
+    cluster_id: str,
+    topic: str,
+    partition: int = Query(...),
+    offset: int = Query(...),
+    format: str = Query(default="auto"),
+):
+    """Re-fetch a single message from Kafka and return the full deserialized payload."""
+    cluster = store.get_cluster(cluster_id)
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+    try:
+        loop = asyncio.get_event_loop()
+        msg = await loop.run_in_executor(
+            None, fetch_message_detail, cluster, topic, partition, offset, format, None
+        )
+        if msg is None:
+            raise HTTPException(status_code=404, detail="Message not found at that offset (may have been deleted by retention)")
+        return msg
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error("get_message_detail %s/%s p%d o%d failed: %s", cluster.name, topic, partition, offset, e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

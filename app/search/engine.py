@@ -12,17 +12,24 @@ from typing import AsyncGenerator, Any
 import duckdb
 import orjson
 
-from app.models import ClusterConfig, SearchRequest, KafkaMessage
-from app.kafka.consumer import fetch_partition, resolve_partition_ranges
+from app.models import ClusterConfig, SearchRequest, KafkaMessage, MessageSummary
+from app.kafka.consumer import fetch_partition, resolve_partition_ranges, fetch_one_message
 from app.schema.deserializer import make_deserializer
 
 _tasks: dict[str, dict] = {}
 
 MAX_PARTITION_THREADS = 8
-_MAX_VALUE_BYTES = 100 * 1024  # 100 KB stored per message value
+_PREVIEW_BYTES = 300  # chars stored per matched message for the results table
 
 
 def create_task(cluster: ClusterConfig, topic: str, request: SearchRequest) -> str:
+    # Clean up completed tasks before adding a new one; keeps _tasks from growing unbounded.
+    for tid in list(_tasks):
+        t = _tasks[tid]
+        if t.get("done") or t.get("error"):
+            t["cancel"].set()
+            _tasks.pop(tid, None)
+
     task_id = str(uuid.uuid4())
     cancel_event = threading.Event()
     _tasks[task_id] = {
@@ -30,12 +37,13 @@ def create_task(cluster: ClusterConfig, topic: str, request: SearchRequest) -> s
         "topic": topic,
         "request": request,
         "cancel": cancel_event,
-        "results": [],
+        "results": [],       # list of MessageSummary-like dicts — lightweight
         "scanned": 0,
         "matched": 0,
         "done": False,
         "error": None,
         "lock": threading.Lock(),
+        "results_capped": False,
     }
     t = threading.Thread(target=_run_search, args=(task_id,), daemon=True)
     t.start()
@@ -46,6 +54,7 @@ def cancel_task(task_id: str) -> bool:
     task = _tasks.get(task_id)
     if task:
         task["cancel"].set()
+        _tasks.pop(task_id, None)
         return True
     return False
 
@@ -117,7 +126,7 @@ def _search_partition(
     request: SearchRequest,
     cancel_event: threading.Event,
     task: dict,
-) -> list[KafkaMessage]:
+) -> list[dict]:
     deserializer = make_deserializer(
         cluster.schema_registry_url,
         cluster.schema_registry_username,
@@ -133,16 +142,15 @@ def _search_partition(
             request, cancel_event, task, deserializer,
         )
 
-    # Fast path: Python-based filtering — no DuckDB round-trip per batch
-    # Pre-compute bytes needle for raw pre-filter (fulltext, non-Avro only)
+    # Raw-bytes pre-filter for fulltext: skip deserialization when term provably absent.
     _use_prefilter = (
         request.value_filter_mode == "fulltext"
         and bool(request.value_filter)
-        and not request.key_filter  # key_filter needs key decoded anyway
+        and not request.key_filter
     )
     _needle: bytes | None = request.value_filter.encode("utf-8", errors="replace") if _use_prefilter else None
 
-    matched: list[KafkaMessage] = []
+    matched: list[dict] = []
     for batch in fetch_partition(
         cluster, topic, pid, start_offset, end_offset, max_messages,
         lambda: cancel_event.is_set(), batch_size=100,
@@ -151,19 +159,17 @@ def _search_partition(
             break
 
         for raw in batch:
-            # Raw bytes pre-filter: skip deserialization when term provably absent.
-            # Avro schema-registry messages start with magic byte 0x00 — skip pre-filter
-            # there since integers are stored as varints (not UTF-8 text).
+            # Pre-filter: skip Avro magic-byte messages (varints not UTF-8 text).
             if _needle is not None:
                 vb = raw["value_bytes"] or b""
                 if vb and vb[0] != 0x00 and _needle not in vb:
-                    raw["value_bytes"] = None  # release bytes for cache miss
+                    raw["value_bytes"] = None
                     continue
 
             val, fmt = deserializer.deserialize(
                 raw["value_bytes"], raw["key_bytes"], request.format
             )
-            raw["value_bytes"] = None  # release raw bytes immediately after deserialization
+            raw["value_bytes"] = None  # release raw bytes immediately
 
             key = raw["key_bytes"].decode("utf-8", errors="replace") if raw["key_bytes"] else None
 
@@ -172,38 +178,26 @@ def _search_partition(
             else:
                 value_raw = str(val) if val is not None else ""
 
-            # Filter with full data so matches in large values aren't missed.
+            # Filter with the full value so matches in large payloads are never missed.
             if not _matches_filters(key, value_raw, val, request):
-                del val  # release deserialized object for non-matches
+                del val
                 continue
 
-            # Truncate before storing so large nested values don't exhaust memory.
-            original_size = len(value_raw)
-            value_truncated = original_size > _MAX_VALUE_BYTES
-            if value_truncated:
-                value_raw = value_raw[:_MAX_VALUE_BYTES]
-                # Re-parse so KafkaMessage.value is a smaller dict, not the full object.
-                try:
-                    value_stored: Any = orjson.loads(value_raw)
-                except Exception:
-                    value_stored = value_raw
-                del val  # original large object no longer needed
-            else:
-                value_stored = val if isinstance(val, (dict, list)) else value_raw
+            # Store only a short preview — the full value is fetched on-demand from Kafka.
+            preview = value_raw[:_PREVIEW_BYTES]
+            del val
+            del value_raw
 
-            matched.append(KafkaMessage(
-                partition=raw["partition"],
-                offset=raw["offset"],
-                timestamp=raw["timestamp"],
-                timestamp_human=_ts_to_human(raw["timestamp"]),
-                key=key,
-                value=value_stored,
-                value_raw=value_raw,
-                headers=raw["headers"],
-                format=fmt,
-                value_truncated=value_truncated,
-                original_size=original_size,
-            ))
+            matched.append({
+                "partition": raw["partition"],
+                "offset": raw["offset"],
+                "timestamp": raw["timestamp"],
+                "timestamp_human": _ts_to_human(raw["timestamp"]),
+                "key": key,
+                "format": fmt,
+                "preview": preview,
+                "headers": raw["headers"],
+            })
 
         with task["lock"]:
             task["scanned"] += len(batch)
@@ -222,8 +216,8 @@ def _search_partition_sql(
     cancel_event: threading.Event,
     task: dict,
     deserializer,
-) -> list[KafkaMessage]:
-    """SQL mode: accumulate all messages in DuckDB then apply WHERE clause."""
+) -> list[dict]:
+    """SQL mode: accumulate all messages in an in-process DuckDB then apply WHERE clause."""
     con = duckdb.connect(":memory:")
     try:
         con.execute("""
@@ -254,6 +248,7 @@ def _search_partition_sql(
                 val, fmt = deserializer.deserialize(
                     raw["value_bytes"], raw["key_bytes"], request.format
                 )
+                raw["value_bytes"] = None
                 key = raw["key_bytes"].decode("utf-8", errors="replace") if raw["key_bytes"] else None
 
                 if isinstance(val, (dict, list)):
@@ -262,11 +257,6 @@ def _search_partition_sql(
                 else:
                     value_raw = str(val) if val is not None else ""
                     value_json = None
-
-                # Truncate before inserting into DuckDB to bound in-memory table size.
-                if value_raw and len(value_raw) > _MAX_VALUE_BYTES:
-                    value_raw = value_raw[:_MAX_VALUE_BYTES]
-                    value_json = value_raw if value_json else None
 
                 rows.append((
                     raw["partition"], raw["offset"], raw["timestamp"],
@@ -282,19 +272,21 @@ def _search_partition_sql(
             f"SELECT * FROM messages {where_sql} ORDER BY timestamp, partition, msg_offset",
             params,
         ).fetchall()
-        return [_row_to_message(row) for row in matched_rows]
+        return [_row_to_summary(row) for row in matched_rows]
     finally:
         con.close()
 
 
 def _run_search(task_id: str) -> None:
-    task = _tasks[task_id]
+    task = _tasks.get(task_id)
+    if task is None:
+        return
     cluster: ClusterConfig = task["cluster"]
     topic: str = task["topic"]
     request: SearchRequest = task["request"]
     cancel_event: threading.Event = task["cancel"]
 
-    all_matched: list[KafkaMessage] = []
+    all_matched: list[dict] = []
 
     try:
         partition_ranges = resolve_partition_ranges(cluster, topic, request)
@@ -319,14 +311,18 @@ def _run_search(task_id: str) -> None:
                 try:
                     partition_results = future.result()
                     all_matched.extend(partition_results)
-                    all_matched.sort(key=lambda m: (m.timestamp, m.partition, m.offset))
-                    # Global cap: once we have enough results, cancel all remaining partitions.
+                    all_matched.sort(key=lambda m: (m["timestamp"], m["partition"], m["offset"]))
                     if len(all_matched) > request.max_messages:
                         all_matched = all_matched[:request.max_messages]
                         cancel_event.set()
-                    with task["lock"]:
-                        task["results"] = list(all_matched)
-                        task["matched"] = len(all_matched)
+                        with task["lock"]:
+                            task["results"] = list(all_matched)
+                            task["matched"] = len(all_matched)
+                            task["results_capped"] = True
+                    else:
+                        with task["lock"]:
+                            task["results"] = list(all_matched)
+                            task["matched"] = len(all_matched)
                 except Exception as e:
                     with task["lock"]:
                         task["error"] = str(e)
@@ -339,31 +335,20 @@ def _run_search(task_id: str) -> None:
             task["done"] = True
 
 
-def _row_to_message(row: tuple) -> KafkaMessage:
+def _row_to_summary(row: tuple) -> dict:
+    """Convert a DuckDB SQL-mode row to a lightweight summary dict."""
     partition, msg_offset, ts, key, value_json, value_raw, headers_str, fmt = row
-    original_size = len(value_raw) if value_raw else 0
-    value_truncated = original_size > _MAX_VALUE_BYTES
-    if value_truncated:
-        value_raw = value_raw[:_MAX_VALUE_BYTES]
-        try:
-            parsed_val = orjson.loads(value_raw)
-        except Exception:
-            parsed_val = value_raw
-    else:
-        parsed_val = json.loads(value_json) if value_json else value_raw
-    return KafkaMessage(
-        partition=partition,
-        offset=msg_offset,
-        timestamp=ts,
-        timestamp_human=_ts_to_human(ts),
-        key=key,
-        value=parsed_val,
-        value_raw=value_raw,
-        headers=json.loads(headers_str) if headers_str else {},
-        format=fmt,
-        value_truncated=value_truncated,
-        original_size=original_size,
-    )
+    preview = (value_raw or "")[:_PREVIEW_BYTES]
+    return {
+        "partition": partition,
+        "offset": msg_offset,
+        "timestamp": ts,
+        "timestamp_human": _ts_to_human(ts),
+        "key": key,
+        "format": fmt,
+        "preview": preview,
+        "headers": json.loads(headers_str) if headers_str else {},
+    }
 
 
 def _build_where(request: SearchRequest) -> tuple[list[str], list]:
@@ -405,6 +390,47 @@ def _ts_to_human(ts_ms: int) -> str:
     return "—"
 
 
+def fetch_message_detail(
+    cluster: ClusterConfig,
+    topic: str,
+    partition: int,
+    offset: int,
+    request_format: str,
+    schema_registry_url: str | None = None,
+) -> KafkaMessage | None:
+    """Re-fetch a single message from Kafka and deserialize it fully."""
+    raw = fetch_one_message(cluster, topic, partition, offset)
+    if raw is None:
+        return None
+
+    deserializer = make_deserializer(
+        cluster.schema_registry_url,
+        cluster.schema_registry_username,
+        cluster.schema_registry_password,
+        schema_registry_url,
+    )
+    val, fmt = deserializer.deserialize(raw["value_bytes"], raw["key_bytes"], request_format)
+
+    if isinstance(val, (dict, list)):
+        value_raw = orjson.dumps(val).decode("utf-8", errors="replace")
+    else:
+        value_raw = str(val) if val is not None else ""
+
+    key = raw["key_bytes"].decode("utf-8", errors="replace") if raw["key_bytes"] else None
+
+    return KafkaMessage(
+        partition=raw["partition"],
+        offset=raw["offset"],
+        timestamp=raw["timestamp"],
+        timestamp_human=_ts_to_human(raw["timestamp"]),
+        key=key,
+        value=val if isinstance(val, (dict, list)) else value_raw,
+        value_raw=value_raw,
+        headers=raw["headers"],
+        format=fmt,
+    )
+
+
 async def stream_results(task_id: str) -> AsyncGenerator[str, None]:
     task = _tasks.get(task_id)
     if not task:
@@ -413,8 +439,8 @@ async def stream_results(task_id: str) -> AsyncGenerator[str, None]:
 
     last_scanned = -1
     last_matched = -1
-    last_results_count = 0   # matched count at time of last results event
-    last_results_t = 0.0     # monotonic time of last results event
+    last_results_count = 0
+    last_results_t = 0.0
 
     while True:
         now = time.monotonic()
@@ -425,7 +451,6 @@ async def stream_results(task_id: str) -> AsyncGenerator[str, None]:
             matched = task["matched"]
             done = task["done"]
             error = task["error"]
-            # Only snapshot the results list when we'll actually use it
             if need_results or done:
                 results = list(task["results"])
             else:
@@ -436,12 +461,10 @@ async def stream_results(task_id: str) -> AsyncGenerator[str, None]:
             last_scanned = scanned
             last_matched = matched
 
-        # Throttled intermediate preview: at most once per second, capped at 1000 messages.
-        # Uses last_matched (updated above) so preview reflects the latest count.
         now = time.monotonic()
         if results is not None and matched > last_results_count and now - last_results_t >= 1.0:
-            msgs_data = [m.model_dump() for m in results[:1000]]
-            yield f"event: results\ndata: {orjson.dumps(msgs_data, option=orjson.OPT_NON_STR_KEYS).decode()}\n\n"
+            # Summaries are tiny (<300 bytes each) — no need to cap or throttle heavily.
+            yield f"event: results\ndata: {orjson.dumps(results, option=orjson.OPT_NON_STR_KEYS).decode()}\n\n"
             last_results_count = matched
             last_results_t = now
 
@@ -453,18 +476,82 @@ async def stream_results(task_id: str) -> AsyncGenerator[str, None]:
             if results is None:
                 with task["lock"]:
                     results = list(task["results"])
-            # Cap browser payload to prevent Chrome OOM on large result sets.
-            # The UI shows a capped indicator and the full count is preserved in matched.
-            _BROWSER_CAP = 1000
-            shown = results[:_BROWSER_CAP]
-            final = [m.model_dump() for m in shown]
+            with task["lock"]:
+                results_capped = task["results_capped"]
             payload = {
                 "scanned": scanned,
                 "matched": matched,
-                "messages": final,
-                "results_capped": len(results) > _BROWSER_CAP,
+                "messages": results,
+                "results_capped": results_capped,
             }
             yield f"event: done\ndata: {orjson.dumps(payload, option=orjson.OPT_NON_STR_KEYS).decode()}\n\n"
             break
 
         await asyncio.sleep(0.05)
+
+
+async def iter_export(task_id: str, fmt: str) -> AsyncGenerator[bytes, None]:
+    """Stream all matched messages re-fetched from Kafka as JSON or CSV."""
+    task = _tasks.get(task_id)
+    if not task:
+        return
+
+    summaries: list[dict] = []
+    with task["lock"]:
+        summaries = list(task["results"])
+
+    cluster: ClusterConfig = task["cluster"]
+    topic: str = task["topic"]
+    request: SearchRequest = task["request"]
+    deserializer = make_deserializer(
+        cluster.schema_registry_url,
+        cluster.schema_registry_username,
+        cluster.schema_registry_password,
+        request.schema_registry_url,
+    )
+
+    loop = asyncio.get_event_loop()
+
+    if fmt == "csv":
+        yield b"partition,offset,timestamp_human,key,value_raw\r\n"
+
+    first = True
+    if fmt == "json":
+        yield b"["
+
+    for s in summaries:
+        raw = await loop.run_in_executor(
+            None, fetch_one_message, cluster, topic, s["partition"], s["offset"]
+        )
+        if raw is None:
+            continue
+
+        val, msg_fmt = deserializer.deserialize(raw["value_bytes"], raw["key_bytes"], request.format)
+        if isinstance(val, (dict, list)):
+            value_raw = orjson.dumps(val).decode("utf-8", errors="replace")
+        else:
+            value_raw = str(val) if val is not None else ""
+
+        key = raw["key_bytes"].decode("utf-8", errors="replace") if raw["key_bytes"] else None
+
+        if fmt == "json":
+            msg_dict = {
+                "partition": raw["partition"],
+                "offset": raw["offset"],
+                "timestamp_human": _ts_to_human(raw["timestamp"]),
+                "key": key,
+                "value_raw": value_raw,
+                "headers": raw["headers"],
+                "format": msg_fmt,
+            }
+            if not first:
+                yield b","
+            yield orjson.dumps(msg_dict)
+            first = False
+        else:
+            ts_human = _ts_to_human(raw["timestamp"])
+            row = ",".join(json.dumps(x) for x in [raw["partition"], raw["offset"], ts_human, key or "", value_raw])
+            yield (row + "\r\n").encode()
+
+    if fmt == "json":
+        yield b"]"

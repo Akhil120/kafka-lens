@@ -330,7 +330,7 @@
                       <span x-text="((page-1)*pageSize+1).toLocaleString()"></span>–<span x-text="Math.min(page*pageSize, messages.length).toLocaleString()"></span>
                       of <span x-text="messages.length.toLocaleString()"></span>
                       <template x-if="resultsCapped">
-                        <span class="text-gray-400 dark:text-gray-500"> (<span x-text="matched.toLocaleString()"></span> total — download for all)</span>
+                        <span class="text-gray-400 dark:text-gray-500"> — cap reached, increase limit or refine filter</span>
                       </template>
                     </span>
                   </div>
@@ -442,25 +442,28 @@
                                     </template>
                                   </div>
 
-                                  <!-- Value viewer -->
+                                  <!-- Value viewer — full payload fetched on-demand from Kafka -->
                                   <div class="lg:col-span-2">
                                     <div class="flex items-center justify-between mb-2">
                                       <div class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Value</div>
-                                      <button @click="copyToClipboard(formattedValue(msg))"
+                                      <button @click="copyToClipboard(copyableValue(msg))"
+                                        x-show="getExpandedDetail(msg) && !getExpandedDetail(msg)._error"
                                         class="flex items-center gap-1 text-xs text-gray-500 hover:text-brand-600 transition-colors">
                                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
                                         Copy
                                       </button>
                                     </div>
-                                    <template x-if="msg.value_truncated">
-                                      <div class="flex items-center gap-1.5 mb-2 px-2 py-1 rounded bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 text-xs">
-                                        <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
-                                        <span>Value truncated — showing 100 KB of <span x-text="Math.round((msg.original_size || 0) / 1024)"></span> KB total</span>
+                                    <template x-if="expandedDetailLoading && expandedRow === idx">
+                                      <div class="flex items-center gap-2 text-xs text-gray-400 dark:text-gray-500 py-6 justify-center">
+                                        <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                                        Fetching full payload from Kafka…
                                       </div>
                                     </template>
-                                    <div class="json-viewer rounded-lg">
-                                      <pre><code class="language-json" x-text="formattedValue(msg)"></code></pre>
-                                    </div>
+                                    <template x-if="!expandedDetailLoading || expandedRow !== idx">
+                                      <div class="json-viewer rounded-lg">
+                                        <pre><code class="language-json" x-text="formattedValue(msg)"></code></pre>
+                                      </div>
+                                    </template>
                                   </div>
                                 </div>
                               </td>

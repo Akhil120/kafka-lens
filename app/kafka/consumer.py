@@ -479,6 +479,41 @@ def resolve_partition_ranges(
     return result
 
 
+def fetch_one_message(cluster: ClusterConfig, topic: str, partition: int, offset: int) -> dict | None:
+    """Seek to an exact partition+offset and return one raw message dict."""
+    cfg = build_kafka_config(cluster, {
+        "group.id": cluster.consumer_group_id + "-lens-detail",
+        "enable.auto.commit": "false",
+        "auto.offset.reset": "earliest",
+    })
+    consumer = Consumer(cfg, logger=_rdkafka_logger)
+    try:
+        consumer.assign([TopicPartition(topic, partition, offset)])
+        deadline = time.time() + 15.0
+        while time.time() < deadline:
+            msg = consumer.poll(timeout=2.0)
+            if msg is None:
+                continue
+            if msg.error():
+                err = msg.error()
+                if err.code() == KafkaError._PARTITION_EOF:
+                    return None
+                raise RuntimeError(f"Kafka error fetching message: {err}")
+            _, ts_val = msg.timestamp()
+            headers_raw = msg.headers() or []
+            return {
+                "partition": msg.partition(),
+                "offset": msg.offset(),
+                "timestamp": ts_val,
+                "key_bytes": msg.key(),
+                "value_bytes": msg.value(),
+                "headers": {k: v.decode("utf-8", errors="replace") for k, v in headers_raw},
+            }
+        return None
+    finally:
+        consumer.close()
+
+
 def fetch_partition(
     cluster: ClusterConfig,
     topic: str,
@@ -502,7 +537,13 @@ def fetch_partition(
     try:
         consumer.assign([TopicPartition(topic, pid, start_offset)])
 
+        # Yield a batch when it reaches batch_size messages OR _BATCH_BYTES_CAP total
+        # raw bytes — whichever comes first. This prevents 100 × 10MB messages from
+        # accumulating 1 GB in memory before the caller can start processing.
+        _BATCH_BYTES_CAP = 10 * 1024 * 1024  # 10 MB per batch regardless of message count
+
         batch: list[dict] = []
+        batch_bytes = 0
         total_fetched = 0
         consecutive_empty = 0
         consecutive_error_batches = 0
@@ -549,6 +590,7 @@ def fetch_partition(
                     reached_end = True
                     break
 
+                vb = msg.value()
                 _, ts_val = msg.timestamp()
                 headers_raw = msg.headers() or []
                 batch.append({
@@ -556,10 +598,17 @@ def fetch_partition(
                     "offset": msg.offset(),
                     "timestamp": ts_val,
                     "key_bytes": msg.key(),
-                    "value_bytes": msg.value(),
+                    "value_bytes": vb,
                     "headers": {k: v.decode("utf-8", errors="replace") for k, v in headers_raw},
                 })
+                batch_bytes += len(vb) if vb else 0
                 total_fetched += 1
+
+                # Yield early if this batch already holds enough raw bytes.
+                if batch_bytes >= _BATCH_BYTES_CAP:
+                    yield batch
+                    batch = []
+                    batch_bytes = 0
 
             if not got_real_msg and last_broker_error is not None:
                 consecutive_error_batches += 1
@@ -573,6 +622,7 @@ def fetch_partition(
                 if batch:
                     yield batch
                     batch = []
+                    batch_bytes = 0
                 if reached_end:
                     break
 

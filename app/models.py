@@ -110,7 +110,20 @@ class SearchRequest(BaseModel):
     max_messages: int = Field(default=1000, ge=1, le=10000)
 
 
+class MessageSummary(BaseModel):
+    """Lightweight per-message row sent in SSE — no value payload."""
+    partition: int
+    offset: int
+    timestamp: int
+    timestamp_human: str
+    key: str | None = None
+    format: str = "plain"
+    preview: str = ""
+    headers: dict[str, str] = {}
+
+
 class KafkaMessage(BaseModel):
+    """Full message returned by the on-demand detail endpoint."""
     partition: int
     offset: int
     timestamp: int
@@ -120,8 +133,6 @@ class KafkaMessage(BaseModel):
     value_raw: str
     headers: dict[str, str]
     format: str
-    value_truncated: bool = False
-    original_size: int = 0
 
 
 class SearchTaskResponse(BaseModel):
