@@ -35,12 +35,25 @@ def invalidate_admin(cluster_id: str) -> None:
         _admin_cache.pop(str(cluster_id), None)
 
 
+_REDACT = {"sasl.password", "ssl.key.password", "ssl.keystore.password"}
+
+
+def _safe_cfg(cfg: dict) -> dict:
+    return {k: ("***" if k in _REDACT else v) for k, v in cfg.items()}
+
+
 def list_topics(cluster: ClusterConfig) -> list[dict]:
-    log.info("list_topics: creating AdminClient for cluster %r (%s)", cluster.name, cluster.bootstrap_servers)
+    from confluent_kafka import KafkaError
+
+    log.info("list_topics: building config for %r (%s)", cluster.name, cluster.bootstrap_servers)
+    cfg = build_kafka_config(cluster)
+    log.info("list_topics: effective kafka config: %s", _safe_cfg(cfg))
+
+    log.info("list_topics: creating AdminClient for %r", cluster.name)
     try:
-        admin = make_admin(cluster)
+        admin = AdminClient(cfg)
     except Exception as exc:
-        log.error("list_topics: AdminClient creation failed for %r: %s", cluster.name, exc, exc_info=True)
+        log.error("list_topics: AdminClient() raised for %r: %s", cluster.name, exc, exc_info=True)
         raise
 
     log.info("list_topics: calling admin.list_topics(timeout=15) for %r", cluster.name)
@@ -50,16 +63,33 @@ def list_topics(cluster: ClusterConfig) -> list[dict]:
         log.error("list_topics: admin.list_topics() raised for %r: %s", cluster.name, exc, exc_info=True)
         raise
 
+    broker_ids = list(meta.brokers.keys())
+    log.info("list_topics: metadata served by broker %s; brokers in cluster: %s",
+             meta.orig_broker_name, broker_ids)
+
     raw_names = list(meta.topics.keys())
-    log.info(
-        "list_topics: Kafka returned %d raw topics for %r (first 20: %s)",
-        len(raw_names), cluster.name, raw_names[:20],
-    )
+    log.info("list_topics: Kafka returned %d raw topic entries for %r (first 20: %s)",
+             len(raw_names), cluster.name, raw_names[:20])
+
+    if not raw_names:
+        log.warning(
+            "list_topics: Kafka returned 0 topics for %r — likely causes: "
+            "(1) API key lacks DESCRIBE ACL on topics, "
+            "(2) TLS hostname check is blocking broker metadata connections "
+            "(enable 'Skip TLS hostname verification' in cluster settings)",
+            cluster.name,
+        )
+        raise ValueError(
+            "Kafka returned 0 topics. Possible causes: "
+            "(1) API key lacks DESCRIBE ACL on Topic:*, "
+            "(2) TLS hostname mismatch on broker connections — enable "
+            "'Skip TLS hostname verification' in the cluster settings."
+        )
 
     topics = []
     skipped_internal = 0
     for name, topic_meta in sorted(meta.topics.items()):
-        if topic_meta.error:
+        if topic_meta.error and topic_meta.error.code() != KafkaError.NO_ERROR:
             log.warning("list_topics: topic %r has metadata error: %s", name, topic_meta.error)
         if name.startswith("_"):
             skipped_internal += 1
@@ -69,10 +99,8 @@ def list_topics(cluster: ClusterConfig) -> list[dict]:
             "partitions": len(topic_meta.partitions),
         })
 
-    log.info(
-        "list_topics: returning %d user topics for %r (%d internal skipped)",
-        len(topics), cluster.name, skipped_internal,
-    )
+    log.info("list_topics: returning %d user topics for %r (%d internal skipped)",
+             len(topics), cluster.name, skipped_internal)
     return topics
 
 

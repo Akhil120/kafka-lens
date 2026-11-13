@@ -15,9 +15,7 @@ def get_topics(cluster_id: str):
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
     try:
-        topics = list_topics(cluster)
-        log.warning("list_topics %s → %d topics returned", cluster.name, len(topics))
-        return topics
+        return list_topics(cluster)
     except Exception as e:
         log.error("list_topics %s failed: %s", cluster.name, e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
