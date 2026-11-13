@@ -66,6 +66,7 @@ class ClusterSummary(BaseModel):
     security_protocol: str
     sasl_mechanism: str
     schema_registry_url: str | None
+    tls_skip_verify: bool = False
 
 
 class TestConnectionResponse(BaseModel):

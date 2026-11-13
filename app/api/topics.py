@@ -1,9 +1,11 @@
+import logging
 from fastapi import APIRouter, HTTPException
 from app import store
 from app.kafka.consumer import list_topics, get_topic_info
 from app.models import TopicInfo
 from app.schema.registry import SchemaRegistryClient
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/clusters", tags=["topics"])
 
 
@@ -13,8 +15,11 @@ def get_topics(cluster_id: str):
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
     try:
-        return list_topics(cluster)
+        topics = list_topics(cluster)
+        log.info("list_topics %s → %d topics", cluster.name, len(topics))
+        return topics
     except Exception as e:
+        log.error("list_topics %s failed: %s", cluster.name, e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

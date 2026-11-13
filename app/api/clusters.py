@@ -17,6 +17,7 @@ def list_clusters():
             security_protocol=c.security_protocol,
             sasl_mechanism=c.sasl_mechanism,
             schema_registry_url=c.schema_registry_url,
+            tls_skip_verify=c.tls_skip_verify,
         )
         for c in clusters
     ]
@@ -32,6 +33,7 @@ def create_cluster(cluster: ClusterConfig):
         security_protocol=cluster.security_protocol,
         sasl_mechanism=cluster.sasl_mechanism,
         schema_registry_url=cluster.schema_registry_url,
+        tls_skip_verify=cluster.tls_skip_verify,
     )
 
 
@@ -47,6 +49,7 @@ def update_cluster(cluster_id: str, cluster: ClusterConfig):
         security_protocol=cluster.security_protocol,
         sasl_mechanism=cluster.sasl_mechanism,
         schema_registry_url=cluster.schema_registry_url,
+        tls_skip_verify=cluster.tls_skip_verify,
     )
 
 
