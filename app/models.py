@@ -65,7 +65,9 @@ class ClusterSummary(BaseModel):
     bootstrap_servers: str
     security_protocol: str
     sasl_mechanism: str
-    schema_registry_url: str | None
+    username: str | None = None
+    schema_registry_url: str | None = None
+    schema_registry_username: str | None = None
     tls_skip_verify: bool = False
 
 

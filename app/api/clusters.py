@@ -16,7 +16,9 @@ def list_clusters():
             bootstrap_servers=c.bootstrap_servers,
             security_protocol=c.security_protocol,
             sasl_mechanism=c.sasl_mechanism,
+            username=c.username,
             schema_registry_url=c.schema_registry_url,
+            schema_registry_username=c.schema_registry_username,
             tls_skip_verify=c.tls_skip_verify,
         )
         for c in clusters
@@ -32,7 +34,9 @@ def create_cluster(cluster: ClusterConfig):
         bootstrap_servers=cluster.bootstrap_servers,
         security_protocol=cluster.security_protocol,
         sasl_mechanism=cluster.sasl_mechanism,
+        username=cluster.username,
         schema_registry_url=cluster.schema_registry_url,
+        schema_registry_username=cluster.schema_registry_username,
         tls_skip_verify=cluster.tls_skip_verify,
     )
 
@@ -42,9 +46,13 @@ def update_cluster(cluster_id: str, data: dict = Body(...)):
     existing = store.get_cluster(cluster_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Cluster not found")
-    # Merge stored secrets so the edit form doesn't need to re-enter passwords
+    # Merge stored credentials/secrets — blank fields in the edit form mean "keep existing"
+    if not data.get("username"):
+        data["username"] = existing.username
     if not data.get("password"):
         data["password"] = existing.password
+    if not data.get("schema_registry_username"):
+        data["schema_registry_username"] = existing.schema_registry_username
     if not data.get("schema_registry_password"):
         data["schema_registry_password"] = existing.schema_registry_password
     if data.get("ssl") and not data["ssl"].get("key_password") and existing.ssl:
@@ -62,7 +70,9 @@ def update_cluster(cluster_id: str, data: dict = Body(...)):
         bootstrap_servers=cluster.bootstrap_servers,
         security_protocol=cluster.security_protocol,
         sasl_mechanism=cluster.sasl_mechanism,
+        username=cluster.username,
         schema_registry_url=cluster.schema_registry_url,
+        schema_registry_username=cluster.schema_registry_username,
         tls_skip_verify=cluster.tls_skip_verify,
     )
 

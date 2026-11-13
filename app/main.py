@@ -32,7 +32,10 @@ def index(request: Request):
             "bootstrap_servers": c.bootstrap_servers,
             "security_protocol": c.security_protocol,
             "sasl_mechanism": c.sasl_mechanism,
+            "username": c.username,
             "schema_registry_url": c.schema_registry_url,
+            "schema_registry_username": c.schema_registry_username,
+            "tls_skip_verify": c.tls_skip_verify,
         }
         for c in clusters
     ]
