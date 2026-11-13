@@ -68,10 +68,13 @@ def build_kafka_config(cluster: ClusterConfig, extra: dict | None = None) -> dic
             if ssl.key_password:
                 cfg["ssl.key.password"] = ssl.key_password
 
-        # Disable TLS hostname verification — needed for private routing setups
-        # where metadata-returned broker hostnames differ from the cert SAN.
+        # For private routing / PrivateLink: broker certs may be signed by an
+        # internal CA (not in certifi) and hostnames may not match the SAN.
+        # Java works because JSSE uses the Windows cert store; librdkafka uses
+        # OpenSSL with certifi which won't have the enterprise CA.
         if cluster.tls_skip_verify:
             cfg["ssl.endpoint.identification.algorithm"] = "none"
+            cfg["enable.ssl.certificate.verification"] = "false"
 
     if proto in ("SASL_PLAINTEXT", "SASL_SSL"):
         if mech == "AWS_MSK_IAM":
