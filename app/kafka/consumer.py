@@ -455,7 +455,7 @@ def resolve_partition_ranges(
             for tp, f in ts_futures.items()
         }
     else:
-        start_offsets = {pid: (request.from_offset or low_wm[pid]) for pid in target_partitions}
+        start_offsets = {pid: (low_wm[pid] if request.from_offset is None else request.from_offset) for pid in target_partitions}
 
     if request.to_timestamp:
         to_ms = int(request.to_timestamp.timestamp() * 1000)
@@ -468,7 +468,7 @@ def resolve_partition_ranges(
             for tp, f in ts_futures.items()
         }
     else:
-        end_offsets = {pid: (request.to_offset or high_wm[pid]) for pid in target_partitions}
+        end_offsets = {pid: (high_wm[pid] if request.to_offset is None else request.to_offset) for pid in target_partitions}
 
     result: dict[int, tuple[int, int]] = {}
     for pid in target_partitions:

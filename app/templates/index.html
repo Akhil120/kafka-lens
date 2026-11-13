@@ -36,10 +36,11 @@
   </header>
 
   <!-- ═══ BODY ═══ -->
-  <div class="flex flex-1 overflow-hidden">
+  <div class="flex flex-1 overflow-hidden" :class="isResizing ? 'select-none' : ''">
 
     <!-- ─── SIDEBAR ─── -->
-    <aside class="sidebar flex flex-col border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-hidden">
+    <aside class="sidebar flex flex-col border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-hidden"
+           :style="'width:'+sidebarWidth+'px; min-width:'+sidebarWidth+'px'">
       <div class="p-3 border-b border-gray-100 dark:border-gray-800">
         <input type="text" x-model="topicFilter" placeholder="Filter topics…"
           class="w-full px-3 py-1.5 text-sm rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200 placeholder-gray-400">
@@ -110,6 +111,9 @@
       </div>
     </aside>
 
+    <!-- ─── SIDEBAR RESIZE HANDLE ─── -->
+    <div class="sidebar-resizer" :class="isResizing ? 'active' : ''" @mousedown.prevent="startResize($event)"></div>
+
     <!-- ─── MAIN CONTENT ─── -->
     <main class="flex-1 flex flex-col overflow-hidden bg-gray-50 dark:bg-gray-950">
 
@@ -175,6 +179,61 @@
           <!-- Scrollable content -->
           <div class="flex-1 overflow-y-auto px-6 py-5 space-y-4">
 
+            <!-- ── Partition Overview ── -->
+            <template x-if="topicInfo">
+              <div class="search-card rounded-xl shadow-sm overflow-hidden fade-in">
+                <div class="flex items-center justify-between px-5 py-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-900/50 transition-colors"
+                     @click="showPartitionDetails = !showPartitionDetails">
+                  <div class="flex items-center gap-3">
+                    <svg class="w-4 h-4 text-brand-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
+                    </svg>
+                    <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">Partition Overview</span>
+                    <span class="text-xs text-gray-400 dark:text-gray-500">
+                      <span x-text="topicInfo.partitions"></span> partition<template x-if="topicInfo.partitions !== 1"><span>s</span></template>
+                      · RF <span x-text="topicInfo.replication_factor"></span>
+                      · <span x-text="topicInfo.total_messages.toLocaleString()"></span> total messages
+                    </span>
+                  </div>
+                  <svg class="w-4 h-4 text-gray-400 transition-transform flex-shrink-0" :class="showPartitionDetails ? 'rotate-180' : ''"
+                       fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                  </svg>
+                </div>
+                <div x-show="showPartitionDetails" x-cloak class="border-t border-gray-100 dark:border-gray-800 overflow-x-auto">
+                  <table class="w-full text-xs">
+                    <thead>
+                      <tr class="bg-gray-50 dark:bg-gray-900/60 text-gray-500 dark:text-gray-400 font-semibold uppercase tracking-wide">
+                        <th class="px-4 py-2 text-left">P</th>
+                        <th class="px-4 py-2 text-right">Low Offset</th>
+                        <th class="px-4 py-2 text-right">High Offset</th>
+                        <th class="px-4 py-2 text-right">Messages</th>
+                        <th class="px-4 py-2"></th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
+                      <template x-for="p in partitionDetails()" :key="p.pid">
+                        <tr class="hover:bg-gray-50 dark:hover:bg-gray-900/30 transition-colors">
+                          <td class="px-4 py-2 font-mono">
+                            <span class="bg-brand-100 dark:bg-brand-900/40 text-brand-700 dark:text-brand-300 px-1.5 py-0.5 rounded font-bold" x-text="p.pid"></span>
+                          </td>
+                          <td class="px-4 py-2 font-mono text-right text-gray-500 dark:text-gray-400" x-text="p.low.toLocaleString()"></td>
+                          <td class="px-4 py-2 font-mono text-right text-gray-600 dark:text-gray-300 font-medium" x-text="p.high.toLocaleString()"></td>
+                          <td class="px-4 py-2 font-mono text-right text-gray-600 dark:text-gray-300" x-text="p.count.toLocaleString()"></td>
+                          <td class="px-4 py-2 text-right">
+                            <button @click.stop="filterToPartition(p.pid)"
+                              class="px-2 py-0.5 rounded border border-brand-200 dark:border-brand-800 text-brand-600 dark:text-brand-400 hover:bg-brand-50 dark:hover:bg-brand-900/20 transition-colors text-xs">
+                              Filter
+                            </button>
+                          </td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </template>
+
             <!-- ── Search Form ── -->
             <div class="search-card rounded-xl shadow-sm p-5">
               <h2 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-4 flex items-center gap-2">
@@ -189,25 +248,38 @@
                   <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">From Timestamp</label>
                   <input type="datetime-local" x-model="search.from_timestamp"
                     class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                  <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">Leave blank for no time filter. Takes priority over offset range.</p>
                 </div>
                 <div>
                   <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">To Timestamp</label>
                   <input type="datetime-local" x-model="search.to_timestamp"
                     class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                  <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">Leave blank for no upper time bound.</p>
                 </div>
 
                 <!-- Offset range -->
-                <div class="flex gap-2">
-                  <div class="flex-1">
-                    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">From Offset</label>
-                    <input type="number" x-model="search.from_offset" placeholder="earliest"
-                      class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                <div>
+                  <div class="flex gap-2">
+                    <div class="flex-1">
+                      <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">From Offset</label>
+                      <input type="number" x-model="search.from_offset" placeholder="earliest"
+                        class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                    </div>
+                    <div class="flex-1">
+                      <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">To Offset</label>
+                      <input type="number" x-model="search.to_offset" placeholder="latest"
+                        class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                    </div>
                   </div>
-                  <div class="flex-1">
-                    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">To Offset</label>
-                    <input type="number" x-model="search.to_offset" placeholder="latest"
-                      class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
-                  </div>
+                  <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">Applied equally to all partitions. Timestamps take priority when set.</p>
+                </div>
+
+                <!-- Partitions filter -->
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Partitions</label>
+                  <input type="text" x-model="search.partitions" placeholder="e.g. 0,1,2 — blank = all"
+                    class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-200">
+                  <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">Comma-separated IDs. Use the Filter button in Partition Overview above.</p>
                 </div>
 
                 <!-- Key filter -->
@@ -224,6 +296,7 @@
                       <option value="regex">regex</option>
                     </select>
                   </div>
+                  <p class="mt-1 text-xs text-gray-400 dark:text-gray-500" x-text="keyMatchHint()"></p>
                 </div>
 
                 <!-- Value filter -->
@@ -240,6 +313,7 @@
                       <option value="sql">sql</option>
                     </select>
                   </div>
+                  <p class="mt-1 text-xs text-gray-400 dark:text-gray-500" x-text="valueFilterHint()"></p>
                 </div>
 
                 <!-- Format + limit -->
@@ -254,6 +328,7 @@
                       <option value="protobuf">Protobuf</option>
                       <option value="plain">Plain text</option>
                     </select>
+                    <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">Auto tries JSON → Avro magic byte → plain.</p>
                   </div>
                   <div class="w-28">
                     <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Limit</label>

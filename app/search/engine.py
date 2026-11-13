@@ -171,7 +171,7 @@ def _search_partition(
             )
             raw["value_bytes"] = None  # release raw bytes immediately
 
-            key = raw["key_bytes"].decode("utf-8", errors="replace") if raw["key_bytes"] else None
+            key = deserializer.deserialize_key(raw["key_bytes"])
 
             if isinstance(val, (dict, list)):
                 value_raw = orjson.dumps(val).decode("utf-8", errors="replace")
@@ -249,7 +249,7 @@ def _search_partition_sql(
                     raw["value_bytes"], raw["key_bytes"], request.format
                 )
                 raw["value_bytes"] = None
-                key = raw["key_bytes"].decode("utf-8", errors="replace") if raw["key_bytes"] else None
+                key = deserializer.deserialize_key(raw["key_bytes"])
 
                 if isinstance(val, (dict, list)):
                     value_json = orjson.dumps(val).decode("utf-8", errors="replace")
@@ -416,7 +416,7 @@ def fetch_message_detail(
     else:
         value_raw = str(val) if val is not None else ""
 
-    key = raw["key_bytes"].decode("utf-8", errors="replace") if raw["key_bytes"] else None
+    key = deserializer.deserialize_key(raw["key_bytes"])
 
     return KafkaMessage(
         partition=raw["partition"],
@@ -532,7 +532,7 @@ async def iter_export(task_id: str, fmt: str) -> AsyncGenerator[bytes, None]:
         else:
             value_raw = str(val) if val is not None else ""
 
-        key = raw["key_bytes"].decode("utf-8", errors="replace") if raw["key_bytes"] else None
+        key = deserializer.deserialize_key(raw["key_bytes"])
 
         if fmt == "json":
             msg_dict = {

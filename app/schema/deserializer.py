@@ -53,6 +53,29 @@ class MessageDeserializer:
             _schema_cache[key] = fastavro.parse_schema(raw)
         return _schema_cache[key]
 
+    def deserialize_key(self, key_bytes: bytes | None) -> str | None:
+        """Deserialize a message key — handles Confluent-encoded Avro/JSON keys."""
+        if key_bytes is None:
+            return None
+        if _is_confluent_encoded(key_bytes) and self._registry:
+            try:
+                schema_id, payload = _extract_schema_id(key_bytes)
+                schema_type = self._get_schema_type(schema_id)
+                if schema_type == "avro":
+                    schema = self._get_avro_schema(schema_id)
+                    val = fastavro.schemaless_reader(io.BytesIO(payload), schema)
+                    if isinstance(val, (dict, list)):
+                        return json.dumps(val, ensure_ascii=False)
+                    return str(val) if val is not None else None
+                elif schema_type == "json":
+                    val = json.loads(payload.decode("utf-8"))
+                    if isinstance(val, (dict, list)):
+                        return json.dumps(val, ensure_ascii=False)
+                    return str(val)
+            except Exception as e:
+                log.warning("deserializer: failed to decode key: %s", e)
+        return key_bytes.decode("utf-8", errors="replace")
+
     def deserialize(
         self,
         value_bytes: bytes | None,

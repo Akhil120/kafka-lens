@@ -9,12 +9,17 @@ function kafkaApp(initialClusters) {
     topicInfo: null,
     topicLoading: false,
 
+    // Sidebar resize
+    sidebarWidth: parseInt(localStorage.getItem('kl-sidebar-w') || '260'),
+    isResizing: false,
+
     // Search state
     search: {
       from_timestamp: '',
       to_timestamp: '',
       from_offset: '',
       to_offset: '',
+      partitions: '',
       key_filter: '',
       key_match: 'contains',
       value_filter: '',
@@ -49,6 +54,7 @@ function kafkaApp(initialClusters) {
     expandedDetail: {},       // key: `${partition}-${offset}` -> full KafkaMessage
     expandedDetailLoading: false,
     topicFilter: '',
+    showPartitionDetails: true,
 
     async init() {
       // already have clusters from server
@@ -104,6 +110,7 @@ function kafkaApp(initialClusters) {
       this.searchError = null;
       this.expandedRow = null;
       this.expandedDetail = {};
+      this.search.partitions = '';
       this.topicLoading = true;
 
       try {
@@ -232,6 +239,10 @@ function kafkaApp(initialClusters) {
       if (s.to_timestamp) body.to_timestamp = new Date(s.to_timestamp).toISOString();
       if (s.from_offset !== '') body.from_offset = parseInt(s.from_offset);
       if (s.to_offset !== '') body.to_offset = parseInt(s.to_offset);
+      if (s.partitions && s.partitions.trim()) {
+        const parts = s.partitions.split(',').map(x => parseInt(x.trim())).filter(n => !isNaN(n));
+        if (parts.length) body.partitions = parts;
+      }
       return body;
     },
 
@@ -486,6 +497,52 @@ function kafkaApp(initialClusters) {
 
     fmtClass(fmt) {
       return `fmt-${fmt}`;
+    },
+
+    // ---- Sidebar resize ----
+    startResize(e) {
+      this.isResizing = true;
+      const startX = e.clientX;
+      const startW = this.sidebarWidth;
+      const onMove = (ev) => {
+        this.sidebarWidth = Math.max(160, Math.min(520, startW + ev.clientX - startX));
+      };
+      const onUp = () => {
+        this.isResizing = false;
+        localStorage.setItem('kl-sidebar-w', String(this.sidebarWidth));
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    },
+
+    // ---- Partition overview ----
+    partitionDetails() {
+      if (!this.topicInfo) return [];
+      return Object.entries(this.topicInfo.low_watermarks)
+        .sort((a, b) => parseInt(a[0]) - parseInt(b[0]))
+        .map(([pid, low]) => ({
+          pid: parseInt(pid),
+          low,
+          high: this.topicInfo.high_watermarks[pid] || 0,
+          count: (this.topicInfo.high_watermarks[pid] || 0) - (low || 0),
+        }));
+    },
+
+    filterToPartition(pid) {
+      this.search.partitions = String(pid);
+    },
+
+    // ---- Search hints ----
+    valueFilterHint() {
+      if (this.search.value_filter_mode === 'jsonpath') return "$.field = value  or  $.field to test field existence";
+      if (this.search.value_filter_mode === 'sql') return "DuckDB SQL on value_raw/value_json — e.g. value_raw LIKE '%error%'";
+      return "Case-insensitive substring match in the full message value";
+    },
+
+    keyMatchHint() {
+      return { exact: 'Full key must match exactly', contains: 'Substring match (case-insensitive)', prefix: 'Key must start with this', regex: 'ECMAScript regular expression' }[this.search.key_match] || '';
     },
   };
 }
