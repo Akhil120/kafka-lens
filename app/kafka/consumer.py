@@ -128,8 +128,46 @@ def get_topic_info(cluster: ClusterConfig, topic: str) -> TopicInfo:
     )
 
 
+def _probe_tls(host: str, port: int, skip_verify: bool = False) -> dict:
+    """Test TLS connectivity using Python's ssl module (independent of librdkafka).
+
+    Python ssl on Windows uses the native Windows cert store, giving specific
+    error messages instead of librdkafka's generic 'ssl transport error: unknown error'.
+    """
+    import socket as _socket
+    import ssl
+
+    result: dict = {"host": host, "port": port}
+    try:
+        ctx = ssl.create_default_context()
+        if skip_verify:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        with _socket.create_connection((host, port), timeout=10) as raw:
+            with ctx.wrap_socket(raw, server_hostname=host) as tls:
+                cert = tls.getpeercert()
+                sans = [v for t, v in cert.get("subjectAltName", []) if t == "DNS"]
+                result.update({
+                    "tls_ok": True,
+                    "protocol": tls.version(),
+                    "cipher": tls.cipher()[0],
+                    "cert_subject": dict(x[0] for x in cert.get("subject", [])),
+                    "cert_sans": sans[:5],
+                    "cert_expires": cert.get("notAfter"),
+                })
+    except ssl.SSLCertVerificationError as e:
+        result.update({"tls_ok": False, "tls_error": f"Certificate verification failed: {e.verify_message}"})
+    except ssl.SSLError as e:
+        result.update({"tls_ok": False, "tls_error": f"SSL error: {e.reason or e}"})
+    except OSError as e:
+        result.update({"tls_ok": False, "tls_error": f"Network error: {e}"})
+    return result
+
+
 def test_connection(cluster: ClusterConfig) -> list[dict]:
     import socket as _socket
+
+    proto = cluster.security_protocol
 
     # TCP pre-check: separates "can't reach host" from "SSL/auth issue"
     for entry in cluster.bootstrap_servers.split(","):
@@ -148,12 +186,25 @@ def test_connection(cluster: ClusterConfig) -> list[dict]:
     try:
         admin = make_admin(cluster)
         meta = admin.list_topics(timeout=15)
-        return [
+        brokers = [
             {"id": b.id, "host": b.host, "port": b.port}
             for b in meta.brokers.values()
         ]
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
+
+    # For SSL clusters, probe TLS to each broker independently using Python ssl
+    # so we get specific error messages rather than librdkafka's opaque ones.
+    if proto in ("SSL", "SASL_SSL"):
+        for broker in brokers:
+            tls = _probe_tls(broker["host"], broker["port"], skip_verify=cluster.tls_skip_verify)
+            broker["tls"] = tls
+            if not tls["tls_ok"]:
+                log.warning("TLS probe failed for %s:%s — %s", broker["host"], broker["port"], tls["tls_error"])
+            else:
+                log.info("TLS probe OK for %s:%s — %s / %s", broker["host"], broker["port"], tls["protocol"], tls["cipher"])
+
+    return brokers
 
 
 def _resolve_offsets_from_timestamps(

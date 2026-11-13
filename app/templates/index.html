@@ -634,8 +634,23 @@
             <div class="rounded-lg p-3 text-sm"
                  :class="testResult.ok ? 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400' : 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400'">
               <template x-if="testResult.ok">
-                <div>
-                  Connected. Brokers: <span x-text="testResult.brokers.map(b => b.host + ':' + b.port).join(', ')"></span>
+                <div class="space-y-1">
+                  <div class="font-medium">Connected — <span x-text="testResult.brokers.length"></span> broker(s)</div>
+                  <template x-for="b in testResult.brokers" :key="b.id">
+                    <div class="font-mono text-xs">
+                      <span x-text="b.host + ':' + b.port"></span>
+                      <template x-if="b.tls">
+                        <span>
+                          <template x-if="b.tls.tls_ok">
+                            <span class="ml-2 text-green-600 dark:text-green-400" x-text="'✓ TLS ' + b.tls.protocol + ' / ' + b.tls.cipher"></span>
+                          </template>
+                          <template x-if="!b.tls.tls_ok">
+                            <span class="ml-2 text-red-500 dark:text-red-400" x-text="'✗ ' + b.tls.tls_error"></span>
+                          </template>
+                        </span>
+                      </template>
+                    </div>
+                  </template>
                 </div>
               </template>
               <template x-if="!testResult.ok">
