@@ -55,14 +55,12 @@ def _macos_ca_bundle() -> str | None:
     return _write_pem("\n".join(blocks)) if blocks else None
 
 def _windows_ca_bundle() -> str | None:
-    # librdkafka on Windows uses OpenSSL, which does NOT automatically read the
-    # Windows cert store. certifi ships Mozilla's root CA bundle and covers all
-    # standard public CAs including those used by Confluent Cloud.
-    try:
-        import certifi
-        return certifi.where()
-    except ImportError:
-        return None
+    # Return None — on Windows we use ssl.ca.certificate.stores instead of
+    # ssl.ca.location. Setting ssl.ca.location overrides the Windows cert store
+    # entirely; ssl.ca.certificate.stores: CA,Root tells librdkafka to read both
+    # the Root store AND the Intermediate CA store, which is required to build
+    # full cert chains (e.g. Let's Encrypt R10 → ISRG Root X1).
+    return None
 
 
 def _linux_ca_bundle() -> str | None:

@@ -48,8 +48,16 @@ def build_kafka_config(cluster: ClusterConfig, extra: dict | None = None) -> dic
     cfg["security.protocol"] = proto
 
     if proto in ("SSL", "SASL_SSL"):
+        import sys
         from app.kafka.ssl import get_system_ca_bundle
         ssl = cluster.ssl
+
+        # On Windows, use the Windows certificate store (Root + Intermediate CA).
+        # Setting ssl.ca.location overrides the Windows store entirely and certifi
+        # only has root CAs — the intermediate CA store is needed to build full
+        # TLS chains. ssl.ca.certificate.stores is Windows-only and ignored elsewhere.
+        if sys.platform == "win32":
+            cfg["ssl.ca.certificate.stores"] = "CA,Root"
 
         # CA cert: explicit override wins; otherwise inject system bundle
         # so org proxy CAs (pushed via GPO/MDM) are trusted by librdkafka.
