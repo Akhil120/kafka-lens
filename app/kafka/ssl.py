@@ -2,7 +2,6 @@ from __future__ import annotations
 import atexit
 import os
 import platform
-import ssl
 import subprocess
 import tempfile
 
@@ -27,7 +26,11 @@ def get_system_ca_bundle() -> str | None:
     if system == "Darwin":
         _ca_bundle_path = _macos_ca_bundle()
     elif system == "Windows":
-        _ca_bundle_path = _windows_ca_bundle()
+        # librdkafka on Windows natively reads the Windows Root Certificate
+        # Store when ssl.ca.location is unset — this already includes public
+        # CAs (DigiCert, etc.) and org proxy CAs pushed via GPO. Setting an
+        # explicit path would override that and can cause verify failures.
+        _ca_bundle_path = None
     else:
         _ca_bundle_path = _linux_ca_bundle()
 
@@ -55,22 +58,6 @@ def _macos_ca_bundle() -> str | None:
             pass
     return _write_pem("\n".join(blocks)) if blocks else None
 
-
-def _windows_ca_bundle() -> str | None:
-    # ROOT = trusted root CAs (includes org proxy CAs pushed via GPO)
-    # CA   = intermediate CAs
-    blocks: list[str] = []
-    for store in ("ROOT", "CA"):
-        try:
-            for cert_der, _, trust in ssl.enum_certificates(store):
-                if trust is True or isinstance(trust, set):
-                    try:
-                        blocks.append(ssl.DER_cert_to_PEM_cert(cert_der))
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-    return _write_pem("\n".join(blocks)) if blocks else None
 
 
 def _linux_ca_bundle() -> str | None:
