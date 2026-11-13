@@ -26,11 +26,7 @@ def get_system_ca_bundle() -> str | None:
     if system == "Darwin":
         _ca_bundle_path = _macos_ca_bundle()
     elif system == "Windows":
-        # librdkafka on Windows natively reads the Windows Root Certificate
-        # Store when ssl.ca.location is unset — this already includes public
-        # CAs (DigiCert, etc.) and org proxy CAs pushed via GPO. Setting an
-        # explicit path would override that and can cause verify failures.
-        _ca_bundle_path = None
+        _ca_bundle_path = _windows_ca_bundle()
     else:
         _ca_bundle_path = _linux_ca_bundle()
 
@@ -58,6 +54,17 @@ def _macos_ca_bundle() -> str | None:
             pass
     return _write_pem("\n".join(blocks)) if blocks else None
 
+def _windows_ca_bundle() -> str | None:
+    # librdkafka on Windows bundles its own OpenSSL which does NOT read the
+    # Windows Root Certificate Store automatically. Use certifi — the same
+    # CA bundle pip/requests use — which reliably includes all public CAs
+    # (DigiCert, Let's Encrypt, etc.) including those used by Confluent Cloud.
+    # For corporate proxy CAs not in certifi, users set ssl.ca.location manually.
+    try:
+        import certifi
+        return certifi.where()
+    except ImportError:
+        return None
 
 
 def _linux_ca_bundle() -> str | None:
