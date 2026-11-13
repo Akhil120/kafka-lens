@@ -30,9 +30,15 @@ _PREVIEW_BYTES = 300  # chars stored per matched message for the results table
 # DuckDB table, cache it for _CACHE_TTL seconds, and re-filter on cache hit.
 # Large ranges fall back to the streaming path (fetch+filter+stop at max_messages).
 
-_CACHE_MAX_SCAN_SIZE = 500_000   # messages; skip caching above this estimate
-_CACHE_TTL          = 600.0      # seconds a cached scan stays alive
-_CACHE_MAX_ENTRIES  = 6          # max simultaneous cached scans
+_CACHE_MAX_SCAN_SIZE  = 500_000   # messages; skip caching above this estimate
+_CACHE_MAX_SCAN_BYTES = 512 * 1024 * 1024  # 512 MB raw value bytes; abort if exceeded
+_CACHE_INSERT_CHUNK   = 2_000    # rows inserted per DuckDB executemany call
+_CACHE_TTL            = 600.0    # seconds a cached scan stays alive
+_CACHE_MAX_ENTRIES    = 6        # max simultaneous cached scans
+
+
+class _CacheTooLargeError(Exception):
+    """Raised mid-fetch when cumulative value bytes exceed _CACHE_MAX_SCAN_BYTES."""
 
 
 @dataclass
@@ -377,12 +383,15 @@ def _fetch_all_to_duckdb(
 ) -> duckdb.DuckDBPyConnection:
     """Fetch ALL messages in partition_ranges into an in-memory DuckDB table.
 
-    Each partition thread accumulates rows locally then bulk-inserts under a
-    lock so the DuckDB connection is never touched concurrently.
+    Inserts in chunks of _CACHE_INSERT_CHUNK rows to bound Python-side memory.
+    Raises _CacheTooLargeError if cumulative value bytes exceed _CACHE_MAX_SCAN_BYTES.
     """
     con = duckdb.connect(":memory:")
     con.execute(_CREATE_MSG_TABLE)
     insert_lock = threading.Lock()
+    byte_total = [0]   # cumulative value_raw bytes; guarded by byte_lock
+    byte_lock = threading.Lock()
+    too_large_event = threading.Event()
 
     def _fetch_one_partition(pid: int, start: int, end: int) -> None:
         deserializer = make_deserializer(
@@ -392,12 +401,11 @@ def _fetch_all_to_duckdb(
             request.schema_registry_url,
         )
         rows: list[tuple] = []
-        # No max_messages cap here — we want the full range for caching.
         for batch in fetch_partition(
             cluster, topic, pid, start, end, 10_000_000,
-            lambda: cancel_event.is_set(), batch_size=2000,
+            lambda: cancel_event.is_set() or too_large_event.is_set(), batch_size=2000,
         ):
-            if cancel_event.is_set():
+            if cancel_event.is_set() or too_large_event.is_set():
                 break
             for raw in batch:
                 val, fmt = deserializer.deserialize(raw["value_bytes"], raw["key_bytes"], request.format)
@@ -409,15 +417,35 @@ def _fetch_all_to_duckdb(
                 else:
                     value_raw = str(val) if val is not None else ""
                     value_json = None
+
+                with byte_lock:
+                    byte_total[0] += len(value_raw)
+                    if byte_total[0] > _CACHE_MAX_SCAN_BYTES:
+                        too_large_event.set()
+
+                if too_large_event.is_set():
+                    break
+
                 rows.append((
                     raw["partition"], raw["offset"], raw["timestamp"],
                     key, value_raw, value_json,
                     orjson.dumps(raw["headers"]).decode(), fmt,
                 ))
+
             with task["lock"]:
                 task["scanned"] += len(batch)
 
-        if rows:
+            # Chunked insert: flush accumulated rows to DuckDB before they pile up.
+            if len(rows) >= _CACHE_INSERT_CHUNK and not too_large_event.is_set():
+                with insert_lock:
+                    con.executemany("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?)", rows)
+                rows.clear()
+
+            if cancel_event.is_set() or too_large_event.is_set():
+                break
+
+        # Flush any remaining rows (skip if we're aborting).
+        if rows and not too_large_event.is_set() and not cancel_event.is_set():
             with insert_lock:
                 con.executemany("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?)", rows)
 
@@ -428,9 +456,18 @@ def _fetch_all_to_duckdb(
             for pid, (start, end) in partition_ranges.items()
         ]
         for f in as_completed(futures):
-            if cancel_event.is_set():
+            if cancel_event.is_set() or too_large_event.is_set():
                 break
             f.result()   # propagate any exception
+
+    if too_large_event.is_set():
+        try:
+            con.close()
+        except Exception:
+            pass
+        raise _CacheTooLargeError(
+            f"Scan exceeded {_CACHE_MAX_SCAN_BYTES // (1024 * 1024)} MB; falling back to streaming"
+        )
 
     return con
 
@@ -558,7 +595,15 @@ def _run_search_cached(
 
     log.info("scan cache MISS for %s/%s — fetching %d partitions",
              cluster.name, topic, len(partition_ranges))
-    con = _fetch_all_to_duckdb(cluster, topic, partition_ranges, request, cancel_event, task)
+    try:
+        con = _fetch_all_to_duckdb(cluster, topic, partition_ranges, request, cancel_event, task)
+    except _CacheTooLargeError as e:
+        log.warning("scan cache too large for %s/%s — falling back to streaming: %s",
+                    cluster.name, topic, e)
+        with task["lock"]:
+            task["scanned"] = 0
+        _run_search_streaming(task_id, task, cluster, topic, request, partition_ranges, cancel_event)
+        return
 
     if cancel_event.is_set():
         try:
