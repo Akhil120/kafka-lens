@@ -128,6 +128,15 @@ def get_topic_info(cluster: ClusterConfig, topic: str) -> TopicInfo:
     )
 
 
+def _is_private_ip(ip: str) -> bool:
+    """Return True for RFC 1918 / link-local addresses."""
+    import ipaddress
+    try:
+        return ipaddress.ip_address(ip).is_private
+    except ValueError:
+        return False
+
+
 def _probe_tls(host: str, port: int, skip_verify: bool = False) -> dict:
     """Test TLS connectivity using Python's ssl module (independent of librdkafka).
 
@@ -139,15 +148,14 @@ def _probe_tls(host: str, port: int, skip_verify: bool = False) -> dict:
 
     result: dict = {"host": host, "port": port}
 
-    # Resolve hostname first so we can show which IP is being contacted.
-    # If per-broker addresses resolve to public IPs instead of PrivateLink,
-    # that's the root cause — needs wildcard DNS on the private zone.
     try:
         resolved_ips = list({addr[4][0] for addr in _socket.getaddrinfo(host, port)})
         result["resolved_ips"] = resolved_ips
     except OSError as e:
         result.update({"tls_ok": False, "tls_error": f"DNS resolution failed: {e}"})
         return result
+
+    all_private = all(_is_private_ip(ip) for ip in resolved_ips)
 
     try:
         ctx = ssl.create_default_context()
@@ -170,11 +178,14 @@ def _probe_tls(host: str, port: int, skip_verify: bool = False) -> dict:
     except ssl.SSLError as e:
         result.update({"tls_ok": False, "tls_error": f"SSL error: {e.reason or e}"})
     except OSError as e:
-        errno_hint = ""
         is_tcp_rst = hasattr(e, "winerror") and e.winerror == 10054
+        errno_hint = ""
         if is_tcp_rst:
-            errno_hint = " — TCP RST from server. Broker address likely resolves to a public IP instead of the PrivateLink endpoint. Add a wildcard DNS entry (*.{}) pointing to the PrivateLink IP.".format(".".join(host.split(".")[1:]))
-        result.update({"tls_ok": False, "tls_error": f"Network error: {e}{errno_hint}", "tcp_rst": is_tcp_rst})
+            if all_private:
+                errno_hint = " — TCP RST from server. DNS resolves to private IPs so PrivateLink is configured, but one or more PrivateLink endpoints are rejecting connections. Check that the PrivateLink service is healthy for all broker IDs."
+            else:
+                errno_hint = " — TCP RST from server. Broker address resolves to a public IP instead of a PrivateLink endpoint. Add a wildcard DNS entry (*.{}) pointing to the PrivateLink IP.".format(".".join(host.split(".")[1:]))
+        result.update({"tls_ok": False, "tls_error": f"Network error: {e}{errno_hint}", "tcp_rst": is_tcp_rst, "tcp_rst_public_ip": is_tcp_rst and not all_private})
     return result
 
 
@@ -226,7 +237,7 @@ def test_connection(cluster: ClusterConfig) -> tuple[list[dict], list[str] | Non
             broker["tls"] = tls
             if not tls["tls_ok"]:
                 log.warning("TLS probe failed for %s:%s — %s", broker["host"], broker["port"], tls["tls_error"])
-                if tls.get("tcp_rst"):
+                if tls.get("tcp_rst_public_ip"):
                     rst_broker_hosts.append(broker["host"])
             else:
                 log.info("TLS probe OK for %s:%s — %s / %s", broker["host"], broker["port"], tls["protocol"], tls["cipher"])
@@ -234,6 +245,9 @@ def test_connection(cluster: ClusterConfig) -> tuple[list[dict], list[str] | Non
         # If per-broker addresses get TCP RST (resolve to public IP) but bootstrap
         # worked (resolves to PrivateLink IP), generate /etc/hosts entries so users
         # can add them locally as a workaround until DNS is fixed by IT.
+        # Only suggest hosts file entries when the broker actually resolves to a
+        # public IP — if DNS already returns private IPs the PrivateLink DNS is
+        # configured and a hosts entry won't help.
         if rst_broker_hosts and bootstrap_ips:
             privatelink_ip = bootstrap_ips[0]
             hosts_entries = [f"{privatelink_ip}  {h}" for h in sorted(rst_broker_hosts)]
