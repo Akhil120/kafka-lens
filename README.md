@@ -127,11 +127,15 @@ Click **Test Connection** — you should see `Connected. Brokers: pkc-xxxxx...`.
 - **Avro / JSON / Protobuf / plain-text auto-detection** — magic byte + schema ID decoded against Confluent Schema Registry; Avro-encoded keys also decoded via schema registry
 - **DuckDB SQL mode** — messages inserted into an in-process columnar table; filters run as real SQL (`value_json`, `value_raw`, `key` columns available)
 - **Partition overview** — per-topic table of low/high watermarks and message count per partition; click **Filter** on any row to scope the search to that partition
+- **Message detail side drawer** — click any result row to open a right-side panel showing full metadata (topic, partition, offset, timestamp, format), key, Kafka headers, and syntax-highlighted value; table rows stay in place; close with ESC or clicking the backdrop
+- **Fast JSON / CSV export** — re-fetches matched messages from Kafka with 16 concurrent connections; downloads directly without popup-blocker issues
 - **Resizable sidebar** — drag the divider between sidebar and main panel; width persisted in `localStorage`
 - **Autocomplete dropdowns** — topic filter shows matching topics across all loaded clusters as you type; key/value filter fields show recent search history (up to 15 entries per field, stored in `localStorage`)
 - **Paginated results** — rows-per-page selector (25 / 50 / 100 / 200), jump-to-page input, Prev / Next — no endless scroll
+- **Pronounced copy feedback** — copy buttons turn green with a ✓ checkmark and "Copied!" for 2 seconds
 - **Fernet-encrypted credential storage** — passwords and SR secrets never stored in plain text (`~/.kafka-lens/`)
 - **Dark / light theme** — persisted in `localStorage`
+- **Automatic cache-busting** — static assets (`app.js`, `app.css`) are versioned by release so browsers always load fresh files after upgrades
 
 ---
 
